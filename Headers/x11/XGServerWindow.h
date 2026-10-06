@@ -113,6 +113,8 @@ typedef struct _gswindow_device_t {
 					  fullscreen nor tiled */
   BOOL                  shadow_resizable; /* Takes presses in a band round
 					  the visible part, for resizing */
+  BOOL                  shadow_popover; /* A popover's (a menu's) smaller
+					  margin and shadow, not a window's */
   BOOL                  shadow_settling; /* That margin changed and the
 					  window manager is fitting the
 					  window to it: the gui hears of

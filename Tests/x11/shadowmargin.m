@@ -5,7 +5,9 @@
  * window manager has the window maximized or while no compositing manager
  * runs, a margin that grows with GSScaleFactor, and none at all for a
  * non-retained window, a borderless one, or a window manager that doesn't
- * know _GTK_FRAME_EXTENTS.
+ * know _GTK_FRAME_EXTENTS.  Popovers (GSBackPopoverShadows: a borderless
+ * window marked with NSUtilityWindowMask, as a theme marks its menus) get
+ * a smaller margin of their own and no resize band.
  *
  * The test forks a window manager that knows _GTK_FRAME_EXTENTS
  * (FakeCSDWindowManager.h) and a compositing manager (FakeCompositor.h).
@@ -349,6 +351,44 @@ main(int argc, const char **argv)
   PASS([frameExtents(dpy, xwin) isEqual: @"none"],
     "a borderless window has no margin");
   [srv termwindow: win];
+
+  /* A popover: a popover's margin, and presses only in its visible part
+     (no resize band). */
+  win = [srv window: NSMakeRect(100, 100, 200, 100)
+		   : NSBackingStoreBuffered
+		   : NSBorderlessWindowMask | NSUtilityWindowMask : 0];
+  xwin = (Window)[srv windowDevice: win];
+  PASS([frameExtents(dpy, xwin) isEqual: @"none"],
+    "without GSBackPopoverShadows a popover has no margin");
+  [srv termwindow: win];
+  setDefault(@"YES", @"GSBackPopoverShadows");
+  win = [srv window: NSMakeRect(100, 100, 200, 100)
+		   : NSBackingStoreBuffered
+		   : NSBorderlessWindowMask | NSUtilityWindowMask : 0];
+  xwin = (Window)[srv windowDevice: win];
+  PASS(depthOf(dpy, xwin) == 32
+    && [frameExtents(dpy, xwin) isEqual: @"14 14 12 16"]
+    && NSEqualSizes(sizeOf(dpy, xwin), NSMakeSize(228, 128))
+    && NSEqualRects(inputShape(dpy, xwin), NSMakeRect(14, 12, 200, 100)),
+    "with GSBackPopoverShadows a popover has a popover's margin and takes"
+    " presses only in its visible part");
+  [srv termwindow: win];
+  win = [srv window: NSMakeRect(100, 100, 200, 100)
+		   : NSBackingStoreBuffered : NSBorderlessWindowMask : 0];
+  xwin = (Window)[srv windowDevice: win];
+  PASS([frameExtents(dpy, xwin) isEqual: @"none"],
+    "with GSBackPopoverShadows a borderless window that isn't a popover has"
+    " no margin");
+  [srv termwindow: win];
+  win = [srv window: NSMakeRect(100, 100, 400, 300)
+		   : NSBackingStoreBuffered : styled : 0];
+  xwin = (Window)[srv windowDevice: win];
+  [srv orderwindow: NSWindowAbove : 0 : win];
+  spin();
+  PASS_EQUAL(frameExtents(dpy, xwin), @"30 30 24 36",
+    "with GSBackPopoverShadows a window keeps a window's margin");
+  [srv termwindow: win];
+  setDefault(nil, @"GSBackPopoverShadows");
 
   fakeCompositorStop(dpy, compositor);
   spin();
