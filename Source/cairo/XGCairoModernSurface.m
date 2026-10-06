@@ -88,6 +88,50 @@ shadow_alpha(double px, double py, double x0, double x1, double y0, double y1,
   return side;
 }
 
+/*
+ * One layer of a CSS box-shadow round a rounded box: the box grown by
+ * `spread` (its corner radius too) and moved down by `offset`, blurred by
+ * `blur` (a Gaussian with half that as its deviation), as seen at (px, py).
+ * Computed from the distance to the grown box's rounded outline, so it
+ * follows the corners as a browser's does.
+ */
+static double
+box_shadow_layer(double px, double py, double x0, double x1, double y0,
+		 double y1, double radius, double offset, double spread,
+		 double blur)
+{
+  double r = radius + spread;
+  double left = x0 - spread, right = x1 + spread;
+  double top = y0 - spread + offset, bottom = y1 + spread + offset;
+  double qx = MAX(MAX(left + r - px, px - (right - r)), 0.0);
+  double qy = MAX(MAX(top + r - py, py - (bottom - r)), 0.0);
+  double d = sqrt(qx * qx + qy * qy) - r;
+
+  return 0.5 * erfc(d / (blur / 2.0 * M_SQRT2));
+}
+
+/*
+ * A popover's shadow (libadwaita's popover contents): box-shadow
+ * 0 1px 5px 1px black at 0.09, and 0 2px 14px 3px black at 0.05, at
+ * scale 1, round its rounded corners. 0 inside the rounded visible part.
+ */
+static double
+popover_shadow_alpha(double px, double py, double x0, double x1, double y0,
+		     double y1, double radius, double scale)
+{
+  double dx = MAX(MAX(x0 + radius - px, px - (x1 - radius)), 0.0);
+  double dy = MAX(MAX(y0 + radius - py, py - (y1 - radius)), 0.0);
+
+  if (sqrt(dx * dx + dy * dy) <= radius && px > x0 && px < x1 && py > y0 && py < y1)
+    {
+      return 0.0;
+    }
+  return 0.09 * box_shadow_layer(px, py, x0, x1, y0, y1, radius,
+				 1 * scale, 1 * scale, 5 * scale)
+    + 0.05 * box_shadow_layer(px, py, x0, x1, y0, y1, radius,
+			      2 * scale, 3 * scale, 14 * scale);
+}
+
 static inline uint32_t
 shadow_pixel(double alpha)
 {
@@ -114,10 +158,11 @@ typedef struct {
 
 static cairo_surface_t *
 shadow_template(cairo_surface_t *similar, const int *margin, int radius,
-		double scale)
+		double scale, BOOL popover)
 {
-  static shadow_cache windowCache;
-  shadow_cache *cache = &windowCache;
+  /* One for windows, one for popovers. */
+  static shadow_cache caches[2];
+  shadow_cache *cache = &caches[popover ? 1 : 0];
   int width = margin[0] + 2 * radius + SHADOW_TILE + margin[1];
   int height = margin[2] + 2 * radius + SHADOW_TILE + margin[3];
   double x0 = margin[0], x1 = width - margin[1];
@@ -149,8 +194,9 @@ shadow_template(cairo_surface_t *similar, const int *margin, int radius,
 
       for (x = 0; x < width; x++)
 	{
-	  row[x] = shadow_pixel(shadow_alpha(x + 0.5, y + 0.5, x0, x1, y0, y1,
-					     radius, scale));
+	  row[x] = shadow_pixel(popover
+	    ? popover_shadow_alpha(x + 0.5, y + 0.5, x0, x1, y0, y1, radius, scale)
+	    : shadow_alpha(x + 0.5, y + 0.5, x0, x1, y0, y1, radius, scale));
 	}
     }
   cairo_surface_mark_dirty(image);
@@ -200,7 +246,7 @@ shadow_copy(cairo_t *cr, cairo_surface_t *template, double sx, double sy,
  */
 static cairo_surface_t *
 create_shadow(cairo_surface_t *similar, int width, int height,
-	      const int *margin, int radius, double scale)
+	      const int *margin, int radius, double scale, BOOL popover)
 {
   int l = margin[0], r = margin[1], t = margin[2], b = margin[3];
   cairo_surface_t *template, *shadow;
@@ -212,7 +258,7 @@ create_shadow(cairo_surface_t *similar, int width, int height,
     {
       return NULL;
     }
-  template = shadow_template(similar, margin, radius, scale);
+  template = shadow_template(similar, margin, radius, scale, popover);
   if (template == NULL)
     {
       return NULL;
@@ -320,7 +366,8 @@ create_shadow(cairo_surface_t *similar, int width, int height,
 					 GSWINDEVICE->xframe.size.height,
 					 GSWINDEVICE->shadow,
 					 GSWINDEVICE->corner_radius,
-					 GSWINDEVICE->shadow_scale);
+					 GSWINDEVICE->shadow_scale,
+					 GSWINDEVICE->shadow_popover);
 	}
 
       /*NSLog(@"Window surface type %d, back buffer type %d, w %d h %d",

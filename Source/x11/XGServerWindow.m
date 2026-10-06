@@ -620,6 +620,17 @@ BOOL AtomPresentAndPointsToItself(Display *dpy, Atom atom, Atom type)
  */
 static const int shadowMargin[4] = { 30, 30, 24, 36 };
 
+/* A popover's (libadwaita's menus): its shadow is smaller and fades out
+ * within about 14 pixels at the sides, less above and more below.
+ */
+static const int popoverMargin[4] = { 14, 14, 12, 16 };
+
+static inline const int *
+marginFor(gswindow_device_t *win)
+{
+  return win->shadow_popover ? popoverMargin : shadowMargin;
+}
+
 /* How far outside the visible edge a resizable window takes presses, for
  * resizing from the shadow (GTK 4 under Mutter: 12 pixels).
  */
@@ -795,6 +806,34 @@ static int compositorRunning = -1;
 }
 
 /*
+ * A borderless window marked as a popover (NSUtilityWindowMask, which a
+ * borderless window has no other use for; the Adwaita theme marks its
+ * menus) gets a popover's margin and shadow when GSBackPopoverShadows is
+ * YES, on the same terms as a window's: the window manager must know the
+ * margin isn't part of the window, and the compositing manager must show
+ * transparency. GSBackPopoverCornerRadius rounds its corners.
+ */
+- (BOOL) _windowGetsPopoverShadow: (unsigned int)style
+{
+  if (handlesWindowDecorations
+    || (style & (NSTitledWindowMask | NSClosableWindowMask
+		 | NSMiniaturizableWindowMask | NSResizableWindowMask
+		 | NSDocModalWindowMask | NSIconWindowMask | NSMiniWindowMask
+		 | NSFullScreenWindowMask)) != 0
+    || (style & NSUtilityWindowMask) == 0
+    || [[NSUserDefaults standardUserDefaults]
+	 boolForKey: @"GSBackPopoverShadows"] == NO)
+    {
+      return NO;
+    }
+  if (![self _checkWMSupports: generic._GTK_FRAME_EXTENTS_ATOM])
+    {
+      return NO;
+    }
+  return [self _compositorShowsAlpha];
+}
+
+/*
  * A borderless window (menus, tool tips) gets an alpha channel when
  * GSBackBorderlessWindowAlpha is YES (a theme that draws them with rounded
  * corners sets it in its GSThemeDomain) and the compositing manager shows
@@ -873,7 +912,7 @@ static int compositorRunning = -1;
     }
   for (i = 0; i < 4; i++)
     {
-      int wanted = flat ? 0 : shadowScaled(shadowMargin[i], win->shadow_scale);
+      int wanted = flat ? 0 : shadowScaled(marginFor(win)[i], win->shadow_scale);
 
       if (win->shadow[i] != wanted)
 	{
@@ -2430,21 +2469,24 @@ _wmTestErrorHandler(Display *display, XErrorEvent *event)
         = style & (NSIconWindowMask | NSMiniWindowMask);
     }
   /* A non-retained window has no backing store to keep its shadow in. */
-  if (type != NSBackingStoreNonretained && [self _windowGetsShadow: style])
+  if (type != NSBackingStoreNonretained
+    && ([self _windowGetsShadow: style] || [self _windowGetsPopoverShadow: style]))
     {
       int i;
 
       window->shadow_eligible = YES;
+      window->shadow_popover = [self _windowGetsPopoverShadow: style];
       window->shadow_resizable = (style & NSResizableWindowMask) != 0;
       window->shadow_scale = shadowScale();
       for (i = 0; i < 4; i++)
 	{
-	  window->shadow[i] = shadowScaled(shadowMargin[i],
+	  window->shadow[i] = shadowScaled(marginFor(window)[i],
 					   window->shadow_scale);
 	}
       window->corner_radius = shadowScaled(MAX(0,
 	[[NSUserDefaults standardUserDefaults]
-	  integerForKey: @"GSBackWindowCornerRadius"]), window->shadow_scale);
+	  integerForKey: window->shadow_popover ? @"GSBackPopoverCornerRadius"
+	    : @"GSBackWindowCornerRadius"]), window->shadow_scale);
     }
 
   frame = [self _OSFrameToXFrame: frame for: window];
