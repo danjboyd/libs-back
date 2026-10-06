@@ -76,6 +76,9 @@ terminate(int sig)
 #ifdef HAVE_XRANDR
 #include <X11/extensions/Xrandr.h>
 #endif
+#if HAVE_XFIXES
+#include <X11/extensions/Xfixes.h>
+#endif
 
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
@@ -528,6 +531,29 @@ static NSString	*startupID = nil;
 #ifdef HAVE_XRANDR
   XRRQueryExtension(dpy, &randrEventBase, &randrErrorBase);
   XRRSelectInput(dpy, RootWindow(dpy, defScreen), RRScreenChangeNotifyMask);
+#endif
+  xfixesEventBase = -1;
+#if HAVE_XFIXES
+  {
+    int xfixesErrorBase;
+    char name[32];
+
+    /* Told when a compositing manager starts or stops, for windows with a
+       shadow margin (-_compositorChanged). */
+    if (XFixesQueryExtension(dpy, &xfixesEventBase, &xfixesErrorBase))
+      {
+	snprintf(name, sizeof(name), "_NET_WM_CM_S%d", defScreen);
+	XFixesSelectSelectionInput(dpy, RootWindow(dpy, defScreen),
+				   XInternAtom(dpy, name, False),
+				   XFixesSetSelectionOwnerNotifyMask
+				   | XFixesSelectionWindowDestroyNotifyMask
+				   | XFixesSelectionClientCloseNotifyMask);
+      }
+    else
+      {
+	xfixesEventBase = -1;
+      }
+  }
 #endif
   return self;
 }

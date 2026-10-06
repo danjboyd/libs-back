@@ -31,6 +31,13 @@
 {
   @private
     cairo_surface_t *_windowSurface;
+    /* The shadow round the window, for its margin and rounded corners
+       (gswindow_device_t shadow); NULL without a margin. */
+    cairo_surface_t *_shadowSurface;
+    /* YES while the window device names this surface as its gdriver and
+       the window is there: the window's -termwindow: and a newer surface
+       for the same window clear it. */
+    BOOL _isDriver;
 }
 @end
 
