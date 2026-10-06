@@ -7,6 +7,107 @@
 
 2026-10-06 Daniel Boyd <danieljboyd@icloud.com>
 
+	Window shadows and rounded corners for windows whose decorations the
+	gui draws (GSBackHandlesWindowDecorations or
+	GSX11HandlesWindowDecorations NO), as GTK's client-side decorations
+	have them under GNOME's Mutter.
+	* Source/x11/XGServerWindow.m (-_windowGetsShadow:): New.  A
+	styled, buffered window the gui decorates gets a transparent margin
+	for a shadow when the GSBackWindowShadows default is YES (a theme
+	sets it in its GSThemeDomain), the window manager lists
+	_GTK_FRAME_EXTENTS in _NET_SUPPORTED and a compositing manager
+	shows transparency.  GSBackWindowCornerRadius rounds its corners.
+	(-_compositorRuns): Remember the answer while XFixes reports the
+	compositing manager starting and stopping.
+	(-_compositorChanged): New.  When the compositing manager stops,
+	windows lose their margin, which would show black; they get it back
+	when one starts.
+	(-_compositorShowsMargin): New.  A margin only while XFixes can say
+	when the compositing manager stops: without it (not built with it,
+	or not in the X server) no window gets one.
+	(-_offsets::::for:): New.  The offsets between the frame and the X
+	window: the window manager's decorations when it draws them, else
+	minus the shadow margin.  Use it in the frame, window rectangle and
+	point conversions, -setWindowdevice:forContext: and
+	-flushwindowrect::.
+	(-_updateShadowSizeOf:): New.  No margin while the window manager
+	has the window maximized, fullscreen or tiled (_NET_WM_STATE,
+	_GTK_EDGE_CONSTRAINTS) or no compositing manager runs; move the
+	minimum and maximum size hints with the margin.  A margin that grows
+	is set before the larger hints, one that shrinks after the smaller
+	ones, so the window manager, which keeps the visible part's size,
+	never holds the window at the other margin's minimum.
+	(-_updateShadowOf:): New.  Set _GTK_FRAME_EXTENTS to the margin, and
+	an input shape of the visible part and, for a resizable window, a
+	12 pixel band round it, which the gui uses to resize.
+	(shadowScale, shadowScaled): New.  The margin, the corner radius and
+	the resize band are in points: multiply them by the gui's scale
+	factor (GSScaleFactor), as GTK's grow with its scale.
+	(-window::::): Create such windows with the 32-bit visual, and the
+	margin.
+	(-placewindow::): Reshape the input region when the size changes:
+	the ConfigureNotify that follows finds xframe already updated.
+	* Source/x11/XGServerEvent.m: Use -_offsets::::for: for event
+	locations.  On ConfigureNotify reshape the input region; on Expose
+	copy the margin from the backing store; on PropertyNotify of
+	_NET_WM_STATE or _GTK_EDGE_CONSTRAINTS update the margin.
+	(-_shadowSizeChangedFor:, -_settleShadowOf:, -_shadowSettled:): New.
+	After the margin changed the window manager fits the X window to it,
+	usually configuring it for the old margin first: hold the frame from
+	the gui until the ConfigureNotify events stop (50 ms with none, 300 ms
+	at most), then send it once, so a maximize is one resize rather than
+	three, and expose the whole window from the buffers, which have the
+	margin now.  On ConfigureNotify also look for a margin change, as the
+	window manager may configure the window before the PropertyNotify for
+	its new state arrives.  On the XFixes selection event for
+	_NET_WM_CM_S<n>, call -_compositorChanged.
+	* Source/x11/XGServer.m: Watch the _NET_WM_CM_S<n> selection with
+	XFixes.
+	* Headers/x11/XGServer.h: Add xfixesEventBase.
+	* Source/x11/XGGLContext.m: Place an OpenGL view's X window with
+	-_offsets::::for:, so it is where the view is in a window with a
+	margin.
+	* Source/cairo/XGCairoModernSurface.m (-windowWillTerminate): New.
+	Destroy the surface on the X window before the window goes.  cairo
+	frees the Render Picture it made for the window when the surface is
+	finished; left to a later autorelease pool drain, that comes after
+	XDestroyWindow has freed the Picture, and the X server answers with
+	RenderBadPicture.
+	(-handleExposeRect:): Nothing to do once the surface is gone.
+	(-dealloc): A surface freed while its window is still there stops
+	being the window's gdriver.  The gui lets go of a window's graphics
+	state before it terminates the window, so a surface nothing else
+	holds goes first, and -termwindow: messaged a freed object.
+	(-initWithDevice:): The surface the window had before is no longer
+	its gdriver, so it leaves the window device alone if it outlives
+	the window.
+	* Source/x11/XGServerWindow.m (-termwindow:): Tell a gdriver that
+	handles the window's backing, before destroying the X window.
+	* Tests/x11/windowterm.m: New test.
+	* Source/cairo/XGCairoModernSurface.m (shadow_alpha, shadow_template,
+	create_shadow): New.  The shadow, as libadwaita's under Mutter, put
+	together in the X server from corners and edges computed once, its
+	fall-off scaled with the window's scale factor.
+	(-initWithDevice:): Make the shadow for a window with a margin.
+	(-handleExposeRect:): Copy the window's contents and the shadow as
+	rectangles, and the four corners through a rounded clip.
+	* Headers/cairo/XGCairoModernSurface.h: Add _shadowSurface and
+	_isDriver.
+	* Headers/x11/XGServerWindow.h: Add shadow, corner_radius,
+	shadow_scale, shadow_eligible, shadow_resizable, shadow_settling and
+	shadow_settle_start to gswindow_device_t.  Declare -_offsets::::for:,
+	-_updateShadowOf:, -_updateShadowSizeOf:, -_shadowSizeChangedFor:,
+	-_shadowSettled:, -_compositorRuns and -_compositorChanged.
+	* Headers/x11/XGGeneric.h: Add the _GTK_FRAME_EXTENTS and
+	_GTK_EDGE_CONSTRAINTS atoms.
+	* Tests/x11/FakeCSDWindowManager.h: New.  A window manager that
+	knows _GTK_FRAME_EXTENTS, for tests.
+	* Tests/x11/shadowmargin.m, Tests/x11/shadowdrawing.m: New tests.
+	Built without XFixes, they and windowterm.m check that a window has
+	no margin.
+
+2026-10-06 Daniel Boyd <danieljboyd@icloud.com>
+
 	* Source/x11/XGServerWindow.m (argb_visual, -_compositorRuns,
 	-_compositorShowsAlpha): New.  A 32-bit visual with an alpha
 	channel (one per screen), and whether a compositing manager runs.

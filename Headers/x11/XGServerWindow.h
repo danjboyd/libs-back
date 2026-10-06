@@ -32,6 +32,8 @@
 #undef BOOL
 #include <x11/XGServer.h>
 
+@class NSNumber;
+
 /*
  * WindowMaker window manager interaction
  *
@@ -97,6 +99,25 @@ typedef struct _gswindow_device_t {
   NSBackingStoreType    type;          /* Backing type */
   NSRect                xframe;        /* Window frame in X11 coordinates */
   NSRect                osframe;       /* Window frame in OpenStep coordinates */
+  int                   shadow[4];     /* Transparent margin round the frame,
+					  left, right, top, bottom, for a
+					  shadow when the gui draws the
+					  decorations (_GTK_FRAME_EXTENTS) */
+  int                   corner_radius; /* Rounds the visible part's corners
+					  while it has that margin */
+  float                 shadow_scale;  /* The gui's scale factor, which
+					  that margin, the radius and the
+					  resize band grow with */
+  BOOL                  shadow_eligible; /* Gets that margin when the window
+					  manager has it neither maximized,
+					  fullscreen nor tiled */
+  BOOL                  shadow_resizable; /* Takes presses in a band round
+					  the visible part, for resizing */
+  BOOL                  shadow_settling; /* That margin changed and the
+					  window manager is fitting the
+					  window to it: the gui hears of
+					  the frame once it settles */
+  NSTimeInterval        shadow_settle_start;
 
   unsigned int          buffer_width;  /* Size in pixels of the current buffers. */
   unsigned int          buffer_height;
@@ -133,6 +154,15 @@ typedef struct _gswindow_device_t {
 + (gswindow_device_t *) _windowForXParent: (Window)xWindow;
 + (gswindow_device_t *) _windowWithTag: (int)windowNumber;
 - (void) _addExposedRectangle: (XRectangle)rectangle : (int)win : (BOOL) ignoreBacking;
+- (void) _offsets: (float *)l : (float *)r : (float *)t : (float *)b
+	      for: (gswindow_device_t *)win;
+- (void) _updateShadowOf: (gswindow_device_t *)win;
+- (BOOL) _updateShadowSizeOf: (gswindow_device_t *)win;
+- (void) _shadowSizeChangedFor: (gswindow_device_t *)win;
+- (void) _shadowSettled: (NSNumber *)windowNumber;
+- (BOOL) _compositorRuns;
+- (BOOL) _compositorShowsMargin;
+- (void) _compositorChanged;
 - (void) _processExposedRectangles: (int)win;
 - (void) _initializeCursorForXWindow: (Window) win;
 - (void) _destroyServerWindows;

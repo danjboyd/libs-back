@@ -70,6 +70,7 @@ typedef struct MonitorDevice {
   id                inputServer;
   int               randrEventBase;
   int               randrErrorBase;
+  int               xfixesEventBase; /* -1 without XFixes */
   MonitorDevice     *monitors;
   unsigned          monitorsCount;
 }
