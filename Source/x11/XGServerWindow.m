@@ -455,6 +455,7 @@ BOOL AtomPresentAndPointsToItself(Display *dpy, Atom atom, Atom type)
                      : (unsigned int) style : (Window) win;
 - (void) _setSupportedWMProtocols: (gswindow_device_t *) window;
 - (unsigned long *) _getExtents: (Window)win;
+- (BOOL) _checkWMSupports: (Atom)feature;
 @end
 
 @implementation XGServer (WindowOps)
@@ -510,7 +511,7 @@ BOOL AtomPresentAndPointsToItself(Display *dpy, Atom atom, Atom type)
   NSRect	x;
   float	t, b, l, r;
 
-  [self styleoffsets: &l : &r : &t : &b : style : win->ident];
+  [self _offsets: &l : &r : &t : &b for: win];
 
   x.size.width = o.size.width - l - r;
   x.size.height = o.size.height - t - b;
@@ -554,11 +555,10 @@ BOOL AtomPresentAndPointsToItself(Display *dpy, Atom atom, Atom type)
 - (NSRect) _XWinRectToOSWinRect: (NSRect)x for: (void*)window
 {
   gswindow_device_t	*win = (gswindow_device_t*)window;
-  unsigned int		style = win->win_attrs.window_style;
   NSRect	o;
   float	t, b, l, r;
 
-  [self styleoffsets: &l : &r : &t : &b : style : win->ident];
+  [self _offsets: &l : &r : &t : &b for: win];
   o.size.width = x.size.width;
   o.size.height = x.size.height;
   o.origin.x = x.origin.x + l;
@@ -581,7 +581,7 @@ BOOL AtomPresentAndPointsToItself(Display *dpy, Atom atom, Atom type)
   NSRect	o;
   float	t, b, l, r;
 
-  [self styleoffsets: &l : &r : &t : &b : style : win->ident];
+  [self _offsets: &l : &r : &t : &b for: win];
   o = x;
   o.origin.y = xScreenSize.height - x.origin.y;
   o.origin.y = o.origin.y - x.size.height - b;
@@ -592,6 +592,56 @@ BOOL AtomPresentAndPointsToItself(Display *dpy, Atom atom, Atom type)
   NSDebugLLog(@"Frame", @"X2O %lu, %x, %@, %@", win->number, style,
     NSStringFromRect(x), NSStringFromRect(o));
   return o;
+}
+
+/*
+ * The offsets between the NSWindow frame and the X window: the window
+ * manager's decorations when it draws them (-styleoffsets:::::), else the
+ * shadow margin, which makes the X window larger than the frame.
+ */
+- (void) _offsets: (float *)l : (float *)r : (float *)t : (float *)b
+	      for: (gswindow_device_t *)win
+{
+  if (!handlesWindowDecorations)
+    {
+      *l = -win->shadow[0];
+      *r = -win->shadow[1];
+      *t = -win->shadow[2];
+      *b = -win->shadow[3];
+      return;
+    }
+  [self styleoffsets: l : r : t : b : win->win_attrs.window_style
+		    : win->ident];
+}
+
+/* The shadow margin, as GNOME's windows have it (libadwaita 1.7 measured
+ * under Mutter): the shadow reaches about 30 pixels out at the sides, and
+ * sits lower, so less at the top and more at the bottom.
+ */
+static const int shadowMargin[4] = { 30, 30, 24, 36 };
+
+/* How far outside the visible edge a resizable window takes presses, for
+ * resizing from the shadow (GTK 4 under Mutter: 12 pixels).
+ */
+static const int shadowResizeBand = 12;
+
+/* The gui's scale factor: GSScaleFactor, else 1 (-resolutionForScreen:
+ * answers 72 dpi). The margin, corner radius and resize band are in
+ * points, as GTK's are in its logical pixels: they grow with it.
+ */
+static float
+shadowScale(void)
+{
+  float scale = [[NSUserDefaults standardUserDefaults]
+    floatForKey: @"GSScaleFactor"];
+
+  return scale > 0.0 ? scale : 1.0;
+}
+
+static int
+shadowScaled(int length, float scale)
+{
+  return (int)floor(length * scale + 0.5);
 }
 
 /*
@@ -655,14 +705,27 @@ argb_visual(Display *dpy, int screen, Visual **visual, Colormap *cmap)
 
 /*
  * Whether a compositing manager runs on the default screen: it owns the
- * _NET_WM_CM_S<n> selection.
+ * _NET_WM_CM_S<n> selection. Remembered while XFixes reports it starting
+ * and stopping (-_compositorChanged), asked each time otherwise.
  */
+static int compositorRunning = -1;
+
 - (BOOL) _compositorRuns
 {
   char name[32];
+  BOOL runs;
 
+  if (compositorRunning >= 0)
+    {
+      return compositorRunning;
+    }
   snprintf(name, sizeof(name), "_NET_WM_CM_S%d", defScreen);
-  return XGetSelectionOwner(dpy, XInternAtom(dpy, name, False)) != None;
+  runs = XGetSelectionOwner(dpy, XInternAtom(dpy, name, False)) != None;
+  if (xfixesEventBase >= 0)
+    {
+      compositorRunning = runs;
+    }
+  return runs;
 }
 
 /*
@@ -677,6 +740,58 @@ argb_visual(Display *dpy, int screen, Visual **visual, Colormap *cmap)
 
   return [self _compositorRuns]
     && argb_visual(dpy, defScreen, &visual, &cmap);
+}
+
+/*
+ * The compositing manager started or stopped: windows with a shadow margin
+ * lose it without one (their margin would show black) and get it back
+ * with one. Windows created without one keep their visual and have none.
+ */
+- (void) _compositorChanged
+{
+  NSMapEnumerator enumerator;
+  void *key;
+  gswindow_device_t *win;
+
+  compositorRunning = -1;
+  enumerator = NSEnumerateMapTable(windowtags);
+  while (NSNextMapEnumeratorPair(&enumerator, &key, (void **)&win))
+    {
+      if (win->shadow_eligible && [self _updateShadowSizeOf: win])
+	{
+	  [self _shadowSizeChangedFor: win];
+	}
+    }
+  NSEndMapTableEnumeration(&enumerator);
+}
+
+/*
+ * A styled window gets a shadow margin when the gui draws the decorations,
+ * GSBackWindowShadows is YES (a theme that draws the decorations sets it in
+ * its GSThemeDomain), and the compositing manager shows transparency.
+ * GSBackWindowCornerRadius rounds the corners of such a window.
+ */
+- (BOOL) _windowGetsShadow: (unsigned int)style
+{
+  NSUserDefaults *defs = [NSUserDefaults standardUserDefaults];
+
+  if (handlesWindowDecorations
+    || (style & (NSTitledWindowMask | NSClosableWindowMask
+		 | NSMiniaturizableWindowMask | NSResizableWindowMask
+		 | NSDocModalWindowMask)) == 0
+    || (style & (NSIconWindowMask | NSMiniWindowMask
+		 | NSFullScreenWindowMask)) != 0
+    || [defs boolForKey: @"GSBackWindowShadows"] == NO)
+    {
+      return NO;
+    }
+  /* The window manager must know the margin isn't part of the window,
+     else it snaps, places and tiles it by the margin's edge. */
+  if (![self _checkWMSupports: generic._GTK_FRAME_EXTENTS_ATOM])
+    {
+      return NO;
+    }
+  return [self _compositorShowsAlpha];
 }
 
 /*
@@ -697,6 +812,163 @@ argb_visual(Display *dpy, int screen, Visual **visual, Colormap *cmap)
       return NO;
     }
   return [self _compositorShowsAlpha];
+}
+
+/*
+ * The window manager's state decides the margin: none while the window is
+ * maximized, fullscreen or tiled against an edge (_GTK_EDGE_CONSTRAINTS),
+ * as GTK drops its shadow then. Returns YES when the margin changed.
+ */
+- (BOOL) _updateShadowSizeOf: (gswindow_device_t *)win
+{
+  Atom type;
+  int format;
+  unsigned long count, remaining;
+  unsigned char *data = NULL;
+  BOOL flat = NO;
+  BOOL changed = NO;
+  int dw = 0, dh = 0;
+  int i;
+
+  if (!win->shadow_eligible)
+    {
+      return NO;
+    }
+  if (XGetWindowProperty(dpy, win->ident, generic._NET_WM_STATE_ATOM, 0, 64,
+			 False, XA_ATOM, &type, &format, &count, &remaining,
+			 &data) == Success && data != NULL)
+    {
+      Atom *atoms = (Atom *)data;
+      BOOL hasVert = NO, hasHorz = NO;
+      unsigned long j;
+
+      for (j = 0; j < count; j++)
+	{
+	  hasVert = hasVert
+	    || atoms[j] == generic._NET_WM_STATE_MAXIMIZED_VERT_ATOM;
+	  hasHorz = hasHorz
+	    || atoms[j] == generic._NET_WM_STATE_MAXIMIZED_HORZ_ATOM;
+	  flat = flat || atoms[j] == generic._NET_WM_STATE_FULLSCREEN_ATOM;
+	}
+      flat = flat || (hasVert && hasHorz);
+      XFree(data);
+      data = NULL;
+    }
+  /* Without a compositing manager the margin would show black. */
+  if (![self _compositorRuns])
+    {
+      flat = YES;
+    }
+  if (XGetWindowProperty(dpy, win->ident,
+			 generic._GTK_EDGE_CONSTRAINTS_ATOM, 0, 1, False,
+			 XA_CARDINAL, &type, &format, &count, &remaining,
+			 &data) == Success && data != NULL)
+    {
+      /* The top, right, bottom and left "tiled" bits. */
+      if (count > 0 && (((unsigned long *)data)[0] & 0x55) != 0)
+	{
+	  flat = YES;
+	}
+      XFree(data);
+    }
+  for (i = 0; i < 4; i++)
+    {
+      int wanted = flat ? 0 : shadowScaled(shadowMargin[i], win->shadow_scale);
+
+      if (win->shadow[i] != wanted)
+	{
+	  if (i < 2)
+	    {
+	      dw += wanted - win->shadow[i];
+	    }
+	  else
+	    {
+	      dh += wanted - win->shadow[i];
+	    }
+	  win->shadow[i] = wanted;
+	  changed = YES;
+	}
+    }
+  /* The size hints are for the X window, margin included: follow the
+     margin, as GTK does. Stale hints would have the window manager
+     restore a maximized window to the old minimum plus the margin. */
+  if (changed && (win->siz_hints.flags & (PMinSize | PMaxSize)))
+    {
+      /* A margin that grows goes to the window manager before the larger
+	 minimum, one that shrinks after the smaller one: the window
+	 manager fits the X window to the margin, keeping the visible
+	 part's size, and in between it would hold the window at the
+	 minimum. (KWin, restoring a window to the visible size it had,
+	 grew it to the larger minimum and then by the margin.) */
+      if (dw > 0 || dh > 0)
+	{
+	  [self _updateShadowOf: win];
+	}
+      if (win->siz_hints.flags & PMinSize)
+	{
+	  win->siz_hints.min_width += dw;
+	  win->siz_hints.min_height += dh;
+	}
+      if (win->siz_hints.flags & PMaxSize)
+	{
+	  win->siz_hints.max_width += dw;
+	  win->siz_hints.max_height += dh;
+	}
+      setNormalHints(dpy, win);
+    }
+  return changed;
+}
+
+/*
+ * Tells the window manager where the visible window is in the X window
+ * (_GTK_FRAME_EXTENTS), and lets pointer events in the margin through to
+ * what is behind (the input shape), except in the resize band.
+ */
+- (void) _updateShadowOf: (gswindow_device_t *)win
+{
+  unsigned long extents[4];
+  int i;
+
+  if (!win->shadow_eligible)
+    {
+      return;
+    }
+  for (i = 0; i < 4; i++)
+    {
+      extents[i] = win->shadow[i];
+    }
+  XChangeProperty(dpy, win->ident, generic._GTK_FRAME_EXTENTS_ATOM,
+		  XA_CARDINAL, 32, PropModeReplace, (unsigned char *)extents, 4);
+#ifdef HAVE_XSHAPE
+  if (win->shadow[0] || win->shadow[1] || win->shadow[2] || win->shadow[3])
+    {
+      XRectangle visible;
+      /* A resizable window takes presses in a band round its visible
+	 edge, where GTK's windows resize from: the gui handles them. */
+      int band[4];
+
+      for (i = 0; i < 4; i++)
+	{
+	  band[i] = win->shadow_resizable
+	    ? MIN(shadowScaled(shadowResizeBand, win->shadow_scale),
+		  win->shadow[i]) : 0;
+	}
+      visible.x = win->shadow[0] - band[0];
+      visible.y = win->shadow[2] - band[2];
+      visible.width = MAX(1, (int)NSWidth(win->xframe)
+			     - win->shadow[0] - win->shadow[1]
+			     + band[0] + band[1]);
+      visible.height = MAX(1, (int)NSHeight(win->xframe)
+			      - win->shadow[2] - win->shadow[3]
+			      + band[2] + band[3]);
+      XShapeCombineRectangles(dpy, win->ident, ShapeInput, 0, 0,
+			      &visible, 1, ShapeSet, Unsorted);
+    }
+  else
+    {
+      XShapeCombineMask(dpy, win->ident, ShapeInput, 0, 0, None, ShapeSet);
+    }
+#endif
 }
 
 /*
@@ -2157,6 +2429,23 @@ _wmTestErrorHandler(Display *display, XErrorEvent *event)
       window->win_attrs.window_style
         = style & (NSIconWindowMask | NSMiniWindowMask);
     }
+  /* A non-retained window has no backing store to keep its shadow in. */
+  if (type != NSBackingStoreNonretained && [self _windowGetsShadow: style])
+    {
+      int i;
+
+      window->shadow_eligible = YES;
+      window->shadow_resizable = (style & NSResizableWindowMask) != 0;
+      window->shadow_scale = shadowScale();
+      for (i = 0; i < 4; i++)
+	{
+	  window->shadow[i] = shadowScaled(shadowMargin[i],
+					   window->shadow_scale);
+	}
+      window->corner_radius = shadowScaled(MAX(0,
+	[[NSUserDefaults standardUserDefaults]
+	  integerForKey: @"GSBackWindowCornerRadius"]), window->shadow_scale);
+    }
 
   frame = [self _OSFrameToXFrame: frame for: window];
 
@@ -2183,13 +2472,13 @@ _wmTestErrorHandler(Display *display, XErrorEvent *event)
 
   window->xwn_attrs.override_redirect = False;
 
-  if ([self _windowGetsAlpha: style])
+  if (window->shadow_eligible || [self _windowGetsAlpha: style])
     {
       Visual *visual;
       Colormap cmap;
 
-      /* An alpha channel for what the gui leaves transparent, which
-	 starts transparent. */
+      /* An alpha channel for what the gui leaves transparent (a shadow
+	 margin, rounded corners), which starts transparent. */
       argb_visual(dpy, defScreen, &visual, &cmap);
       window->depth = 32;
       window->xwn_attrs.colormap = cmap;
@@ -2230,6 +2519,8 @@ _wmTestErrorHandler(Display *display, XErrorEvent *event)
   window->map_state = IsUnmapped;
   window->visibility = -1;
   window->wm_state = WithdrawnState;
+
+  [self _updateShadowOf: window];
 
   // Create an X GC for the content view set it's colors
   values.foreground = window->xwn_attrs.background_pixel;
@@ -2511,6 +2802,15 @@ _wmTestErrorHandler(Display *display, XErrorEvent *event)
     }
   if (window->ident)
     {
+      /* A gdriver holding the window itself lets go of it first. */
+      if (window->gdriver != NULL
+	  && (window->gdriverProtocol & GDriverHandlesBacking)
+	  && [(id)window->gdriver respondsToSelector:
+			    @selector(windowWillTerminate)])
+	{
+	  [(id)window->gdriver performSelector:
+			    @selector(windowWillTerminate)];
+	}
       XDestroyWindow(dpy, window->ident);
       if (window->gc)
 	XFreeGC (dpy, window->gc);
@@ -2975,8 +3275,7 @@ _wmTestErrorHandler(Display *display, XErrorEvent *event)
     }
 #endif
 
-  [self styleoffsets: &l : &r : &t : &b
-		    : window->win_attrs.window_style : window->ident];
+  [self _offsets: &l : &r : &t : &b for: window];
   GSSetDevice(ctxt, window, l, NSHeight(window->xframe) + b);
   DPSinitmatrix(ctxt);
   //DPStranslate(ctxt, -l, -b);
@@ -3624,6 +3923,13 @@ swapColors(unsigned char *image_data, NSBitmapImageRep *rep)
   and we don't have to do anything when the ConfigureNotify arrives later.
   If we're wrong, the ConfigureNotify will have the exact coordinates, and
   at that point, we'll send new GSAppKitWindow* events to -gui. */
+  if (!NSEqualSizes(window->xframe.size, xFrame.size))
+    {
+      window->xframe = xFrame;
+      /* The ConfigureNotify will find the size unchanged: reshape the
+	 input region now. */
+      [self _updateShadowOf: window];
+    }
   window->xframe = xFrame;
 
   /* Update the hints.  Note that we do this _after_ updating xframe since
@@ -4068,8 +4374,7 @@ swapColors(unsigned char *image_data, NSBitmapImageRep *rep)
   valuemask = (GCFunction | GCPlaneMask | GCClipMask);
   XChangeGC(dpy, window->gc, valuemask, &values);
 
-  [self styleoffsets: &l : &r : &t : &b
-		    : window->win_attrs.window_style : window->ident];
+  [self _offsets: &l : &r : &t : &b for: window];
   xi = rect.origin.x = NSMinX(rect) - l;
   yi = rect.origin.y = NSHeight(window->xframe) + b - NSMaxY(rect);
   width = NSWidth(rect);

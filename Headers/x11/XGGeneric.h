@@ -111,7 +111,10 @@ static char *atom_names[] = {
   "_GNUSTEP_WM_ATTR",
   "_GNUSTEP_TITLEBAR_STATE",
   "_GNUSTEP_FRAME_OFFSETS",
-  "WM_IGNORE_FOCUS_EVENTS"
+  "WM_IGNORE_FOCUS_EVENTS",
+  // GTK's client-side decorations
+  "_GTK_FRAME_EXTENTS",
+  "_GTK_EDGE_CONSTRAINTS"
  };
 
 /*
@@ -187,6 +190,8 @@ static char *atom_names[] = {
 #define _GNUSTEP_TITLEBAR_STATE_ATOM           atoms[67]
 #define _GNUSTEP_FRAME_OFFSETS_ATOM            atoms[68]
 #define WM_IGNORE_FOCUS_EVENTS_ATOM            atoms[69]
+#define _GTK_FRAME_EXTENTS_ATOM                atoms[70]
+#define _GTK_EDGE_CONSTRAINTS_ATOM             atoms[71]
 
 /*
  * Frame offsets for window inside parent decoration window.
