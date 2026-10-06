@@ -27,8 +27,229 @@
 #include "x11/XGServerWindow.h"
 #include "cairo/XGCairoModernSurface.h"
 #include <cairo-xlib.h>
+#include <math.h>
+#include <stdint.h>
+#include <string.h>
 
 #define GSWINDEVICE ((gswindow_device_t *)gsDevice)
+
+/*
+ * The visible part of a window with a shadow margin: the surface less the
+ * margin, with rounded corners.
+ */
+static void
+visible_path(cairo_t *cr, int width, int height, const int *margin, double radius)
+{
+  double x0 = margin[0], x1 = width - margin[1];
+  double y0 = margin[2], y1 = height - margin[3];
+
+  cairo_new_sub_path(cr);
+  cairo_arc(cr, x1 - radius, y0 + radius, radius, -M_PI / 2, 0);
+  cairo_arc(cr, x1 - radius, y1 - radius, radius, 0, M_PI / 2);
+  cairo_arc(cr, x0 + radius, y1 - radius, radius, M_PI / 2, M_PI);
+  cairo_arc(cr, x0 + radius, y0 + radius, radius, M_PI, 3 * M_PI / 2);
+  cairo_close_path(cr);
+}
+
+/*
+ * The shadow's opacity at a point outside the rounded visible part, as
+ * GNOME's windows have it (libadwaita 1.7 measured under Mutter): black,
+ * from 0.19 at the edge to about 0.01 thirty pixels out at the sides;
+ * weaker and shorter above and a little stronger below, as the shadow sits
+ * lower; following the rounded corners. 0 inside.
+ */
+static double
+shadow_alpha(double px, double py, double x0, double x1, double y0, double y1,
+	     double radius, double scale)
+{
+  double dx, dy, corner, d, vertical, side;
+
+  /* Distance outside the rounded visible part, and how much of it is
+     vertical. */
+  dx = MAX(MAX(x0 + radius - px, px - (x1 - radius)), 0.0);
+  dy = MAX(MAX(y0 + radius - py, py - (y1 - radius)), 0.0);
+  corner = sqrt(dx * dx + dy * dy);
+  if (corner <= radius && px > x0 && px < x1 && py > y0 && py < y1)
+    {
+      return 0.0;
+    }
+  /* The fall-off lengths are GNOME's at scale 1. */
+  d = MAX(corner - radius, 0.0) / scale;
+  vertical = corner > 0.0 ? dy / corner : 0.0;
+  side = 0.19 * exp(-d / 10.0);
+  if (py < y0 + radius)
+    {
+      return (1.0 - vertical) * side + vertical * 0.10 * exp(-d / 3.5);
+    }
+  if (py > y1 - radius)
+    {
+      return (1.0 - vertical) * side + vertical * 0.21 * exp(-d / 11.0);
+    }
+  return side;
+}
+
+static inline uint32_t
+shadow_pixel(double alpha)
+{
+  /* Premultiplied black. */
+  return ((uint32_t)(alpha * 255.0 + 0.5)) << 24;
+}
+
+/*
+ * The shadow of a small window with the given margin and radius: its four
+ * corners, and between them straight edges SHADOW_TILE pixels long, on a
+ * surface like the window's. Computed once and kept in the X server; any
+ * window's shadow is put together from it there (see create_shadow).
+ */
+#define SHADOW_TILE 64
+
+/* A template kept in the X server, and what it was made for. */
+typedef struct {
+  cairo_surface_t *surface;
+  Display *display;
+  int margin[4];
+  int radius;
+  double scale;
+} shadow_cache;
+
+static cairo_surface_t *
+shadow_template(cairo_surface_t *similar, const int *margin, int radius,
+		double scale)
+{
+  static shadow_cache windowCache;
+  shadow_cache *cache = &windowCache;
+  int width = margin[0] + 2 * radius + SHADOW_TILE + margin[1];
+  int height = margin[2] + 2 * radius + SHADOW_TILE + margin[3];
+  double x0 = margin[0], x1 = width - margin[1];
+  double y0 = margin[2], y1 = height - margin[3];
+  Display *display = cairo_xlib_surface_get_display(similar);
+  cairo_surface_t *image;
+  cairo_t *cr;
+  unsigned char *data;
+  int stride, x, y;
+
+  if (cache->surface != NULL && cache->display == display
+    && cache->radius == radius && cache->scale == scale
+    && memcmp(cache->margin, margin, sizeof(cache->margin)) == 0)
+    {
+      return cache->surface;
+    }
+  image = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, width, height);
+  if (cairo_surface_status(image) != CAIRO_STATUS_SUCCESS)
+    {
+      cairo_surface_destroy(image);
+      return NULL;
+    }
+  cairo_surface_flush(image);
+  data = cairo_image_surface_get_data(image);
+  stride = cairo_image_surface_get_stride(image);
+  for (y = 0; y < height; y++)
+    {
+      uint32_t *row = (uint32_t *)(data + y * stride);
+
+      for (x = 0; x < width; x++)
+	{
+	  row[x] = shadow_pixel(shadow_alpha(x + 0.5, y + 0.5, x0, x1, y0, y1,
+					     radius, scale));
+	}
+    }
+  cairo_surface_mark_dirty(image);
+  if (cache->surface != NULL)
+    {
+      cairo_surface_destroy(cache->surface);
+    }
+  cache->surface = cairo_surface_create_similar(similar,
+    CAIRO_CONTENT_COLOR_ALPHA, width, height);
+  cr = cairo_create(cache->surface);
+  cairo_set_operator(cr, CAIRO_OPERATOR_SOURCE);
+  cairo_set_source_surface(cr, image, 0, 0);
+  cairo_paint(cr);
+  cairo_destroy(cr);
+  cairo_surface_destroy(image);
+  cache->display = display;
+  memcpy(cache->margin, margin, sizeof(cache->margin));
+  cache->radius = radius;
+  cache->scale = scale;
+  return cache->surface;
+}
+
+/* Copies a rectangle of the template to (dx, dy) in the shadow. */
+static void
+shadow_copy(cairo_t *cr, cairo_surface_t *template, double sx, double sy,
+	    double w, double h, double dx, double dy)
+{
+  if (w <= 0 || h <= 0)
+    {
+      return;
+    }
+  cairo_save(cr);
+  cairo_rectangle(cr, dx, dy, w, h);
+  cairo_clip(cr);
+  cairo_set_source_surface(cr, template, dx - sx, dy - sy);
+  cairo_paint(cr);
+  cairo_restore(cr);
+}
+
+/*
+ * The shadow round a window with a shadow margin, on a surface like the
+ * window's (so exposes copy it within the X server), transparent inside the
+ * visible part: the template's corners, and its straight edges repeated
+ * along the window's (the shadow there only depends on the distance from
+ * the edge). All copies within the X server: windows are resized often,
+ * and a new shadow is made at each size.
+ */
+static cairo_surface_t *
+create_shadow(cairo_surface_t *similar, int width, int height,
+	      const int *margin, int radius, double scale)
+{
+  int l = margin[0], r = margin[1], t = margin[2], b = margin[3];
+  cairo_surface_t *template, *shadow;
+  int tw, th, x, y;
+  cairo_t *cr;
+
+  if (width <= 0 || height <= 0 || width - l - r < 2 * radius
+    || height - t - b < 2 * radius)
+    {
+      return NULL;
+    }
+  template = shadow_template(similar, margin, radius, scale);
+  if (template == NULL)
+    {
+      return NULL;
+    }
+  tw = l + 2 * radius + SHADOW_TILE + r;
+  th = t + 2 * radius + SHADOW_TILE + b;
+  /* Similar surfaces start transparent. */
+  shadow = cairo_surface_create_similar(similar, CAIRO_CONTENT_COLOR_ALPHA,
+					width, height);
+  cr = cairo_create(shadow);
+  cairo_set_operator(cr, CAIRO_OPERATOR_SOURCE);
+  /* Corners: the margin and the radius each way. */
+  shadow_copy(cr, template, 0, 0, l + radius, t + radius, 0, 0);
+  shadow_copy(cr, template, tw - r - radius, 0, r + radius, t + radius,
+	      width - r - radius, 0);
+  shadow_copy(cr, template, 0, th - b - radius, l + radius, b + radius,
+	      0, height - b - radius);
+  shadow_copy(cr, template, tw - r - radius, th - b - radius, r + radius,
+	      b + radius, width - r - radius, height - b - radius);
+  /* Edges between them, a tile at a time. */
+  for (x = l + radius; x < width - r - radius; x += SHADOW_TILE)
+    {
+      int w = MIN(SHADOW_TILE, width - r - radius - x);
+
+      shadow_copy(cr, template, l + radius, 0, w, t, x, 0);
+      shadow_copy(cr, template, l + radius, th - b, w, b, x, height - b);
+    }
+  for (y = t + radius; y < height - b - radius; y += SHADOW_TILE)
+    {
+      int h = MIN(SHADOW_TILE, height - b - radius - y);
+
+      shadow_copy(cr, template, 0, t + radius, l, h, 0, y);
+      shadow_copy(cr, template, tw - r, t + radius, r, h, width - r, y);
+    }
+  cairo_destroy(cr);
+  return shadow;
+}
 
 @implementation XGCairoModernSurface
 
@@ -75,14 +296,35 @@
 
       // Ask XGServerWindow to call +[CairoContext handleExposeRect:forDriver:]
       // to let us handle the back buffer -> front buffer copy using cairo.
-      GSWINDEVICE->gdriverProtocol |= GDriverHandlesExpose | GDriverHandlesBacking;
+      /* A surface the window had before (the window changed size, say) may
+	 outlive the window: it no longer touches the window device.  Only a
+	 surface of this class sets GDriverHandlesTermination, and it clears
+	 gdriver when it is freed, so that one is still there. */
+      if (GSWINDEVICE->gdriver != NULL && GSWINDEVICE->gdriver != self
+	&& (GSWINDEVICE->gdriverProtocol & GDriverHandlesTermination))
+	{
+	  ((XGCairoModernSurface *)GSWINDEVICE->gdriver)->_isDriver = NO;
+	}
+      GSWINDEVICE->gdriverProtocol |= GDriverHandlesExpose | GDriverHandlesBacking
+	| GDriverHandlesTermination;
       GSWINDEVICE->gdriver = self;
+      _isDriver = YES;
 
       _windowSurface = windowsurface;
       _surface = cairo_surface_create_similar(windowsurface,
 					      CAIRO_CONTENT_COLOR_ALPHA,
 					      GSWINDEVICE->xframe.size.width,
 					      GSWINDEVICE->xframe.size.height);
+      if (GSWINDEVICE->shadow[0] || GSWINDEVICE->shadow[1]
+	|| GSWINDEVICE->shadow[2] || GSWINDEVICE->shadow[3])
+	{
+	  _shadowSurface = create_shadow(windowsurface,
+					 GSWINDEVICE->xframe.size.width,
+					 GSWINDEVICE->xframe.size.height,
+					 GSWINDEVICE->shadow,
+					 GSWINDEVICE->corner_radius,
+					 GSWINDEVICE->shadow_scale);
+	}
 
       /*NSLog(@"Window surface type %d, back buffer type %d, w %d h %d",
 	(int) cairo_surface_get_type(_windowSurface),
@@ -95,11 +337,41 @@
   return self;
 }
 
-- (void) dealloc
+/* The X window is about to go.  cairo frees the Render Picture it made for
+ * the window when the surface is finished, which would otherwise happen at
+ * some later autorelease pool drain: after XDestroyWindow, which has already
+ * freed the Picture, so the X server answers with RenderBadPicture.  The back
+ * buffer and the shadow are pixmaps of their own and can wait. */
+- (void) windowWillTerminate
 {
+  /* The window device goes with the window. */
+  _isDriver = NO;
   if (_windowSurface != NULL)
     {
       cairo_surface_destroy(_windowSurface);
+      _windowSurface = NULL;
+    }
+}
+
+- (void) dealloc
+{
+  /* The window holds the gdriver without retaining it, and -termwindow:
+     sends it -windowWillTerminate.  The gui lets go of the window's
+     graphics state, and so of this surface, before it terminates the
+     window, so a surface nothing else holds is freed first: then the
+     window must not name it. */
+  if (_isDriver && GSWINDEVICE->gdriver == self)
+    {
+      GSWINDEVICE->gdriver = NULL;
+      GSWINDEVICE->gdriverProtocol &= ~GDriverHandlesTermination;
+    }
+  if (_windowSurface != NULL)
+    {
+      cairo_surface_destroy(_windowSurface);
+    }
+  if (_shadowSurface != NULL)
+    {
+      cairo_surface_destroy(_shadowSurface);
     }
   [super dealloc];
 }
@@ -111,7 +383,13 @@
 
 - (void) handleExposeRect: (NSRect)rect
 {
-  cairo_t *windowCtx = cairo_create(_windowSurface);
+  cairo_t *windowCtx;
+
+  if (_windowSurface == NULL)
+    {
+      return;
+    }
+  windowCtx = cairo_create(_windowSurface);
 
   double backupOffsetX, backupOffsetY;
 
@@ -127,9 +405,65 @@
   // FIXME: should round
   cairo_rectangle(windowCtx, rect.origin.x, rect.origin.y, rect.size.width, rect.size.height);
   cairo_clip(windowCtx);
-  cairo_set_source_surface(windowCtx, _surface, 0, 0);
   cairo_set_operator(windowCtx, CAIRO_OPERATOR_SOURCE);
-  cairo_paint(windowCtx);
+  if (_shadowSurface != NULL)
+    {
+      /* The window's contents inside its rounded visible part, the
+	 shadow everywhere else (the margin and the corners). Rectangles
+	 copy within the X server; only the four corners take the rounded
+	 clip, so nothing the gui draws can un-round them. */
+      int width = GSWINDEVICE->xframe.size.width;
+      int height = GSWINDEVICE->xframe.size.height;
+      int x0 = GSWINDEVICE->shadow[0], x1 = width - GSWINDEVICE->shadow[1];
+      int y0 = GSWINDEVICE->shadow[2], y1 = height - GSWINDEVICE->shadow[3];
+      int r = GSWINDEVICE->corner_radius;
+      int corners[4][2] = { { x0, y0 }, { x1 - r, y0 }, { x0, y1 - r }, { x1 - r, y1 - r } };
+      int i;
+
+      cairo_save(windowCtx);
+      cairo_rectangle(windowCtx, x0, y0 + r, x1 - x0, (y1 - r) - (y0 + r));
+      cairo_rectangle(windowCtx, x0 + r, y0, (x1 - r) - (x0 + r), r);
+      cairo_rectangle(windowCtx, x0 + r, y1 - r, (x1 - r) - (x0 + r), r);
+      cairo_clip(windowCtx);
+      cairo_set_source_surface(windowCtx, _surface, 0, 0);
+      cairo_paint(windowCtx);
+      cairo_restore(windowCtx);
+
+      cairo_save(windowCtx);
+      cairo_rectangle(windowCtx, 0, 0, width, y0);
+      cairo_rectangle(windowCtx, 0, y1, width, height - y1);
+      cairo_rectangle(windowCtx, 0, y0, x0, y1 - y0);
+      cairo_rectangle(windowCtx, x1, y0, width - x1, y1 - y0);
+      cairo_clip(windowCtx);
+      cairo_set_source_surface(windowCtx, _shadowSurface, 0, 0);
+      cairo_paint(windowCtx);
+      cairo_restore(windowCtx);
+
+      for (i = 0; r > 0 && i < 4; i++)
+	{
+	  NSRect square = NSMakeRect(corners[i][0], corners[i][1], r, r);
+
+	  if (!NSIntersectsRect(square, rect))
+	    {
+	      continue;
+	    }
+	  cairo_save(windowCtx);
+	  cairo_rectangle(windowCtx, corners[i][0], corners[i][1], r, r);
+	  cairo_clip(windowCtx);
+	  cairo_set_source_surface(windowCtx, _shadowSurface, 0, 0);
+	  cairo_paint(windowCtx);
+	  visible_path(windowCtx, width, height, GSWINDEVICE->shadow, r);
+	  cairo_clip(windowCtx);
+	  cairo_set_source_surface(windowCtx, _surface, 0, 0);
+	  cairo_paint(windowCtx);
+	  cairo_restore(windowCtx);
+	}
+    }
+  else
+    {
+      cairo_set_source_surface(windowCtx, _surface, 0, 0);
+      cairo_paint(windowCtx);
+    }
 
   // Debugging
   // cairo_reset_clip(windowCtx);

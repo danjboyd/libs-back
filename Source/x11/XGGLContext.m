@@ -112,14 +112,20 @@
   else
     {
       /* The GUI library handles window decorations, so the
-       * the parent X window is equal to the NSWindow frame
-       * and we can use window base coordinates.
+       * the parent X window is the NSWindow frame, plus any shadow
+       * margin round it, and we can use window base coordinates.
        */
       rect = [view convertRect: [view bounds] toView: nil];
     }
 
-  x = NSMinX(rect);
-  y = NSHeight(win_info->xframe) - NSMaxY(rect);
+  {
+    float l, r, t, b;
+
+    /* -_offsets::::for: is minus the margin, 0 without one. */
+    [server _offsets: &l : &r : &t : &b for: win_info];
+    x = NSMinX(rect) - l;
+    y = NSHeight(win_info->xframe) + b - NSMaxY(rect);
+  }
   width = NSWidth(rect);
   height = NSHeight(rect);
 
@@ -206,14 +212,20 @@
   else
     {
       /* The GUI library handles window decorations, so the
-       * the parent X window is equal to the NSWindow frame
-       * and we can use window base coordinates.
+       * the parent X window is the NSWindow frame, plus any shadow
+       * margin round it, and we can use window base coordinates.
        */
       rect = [attached convertRect: [attached bounds] toView: nil];
     }
 
-  x = NSMinX(rect);
-  y = NSHeight(win_info->xframe) - NSMaxY(rect);
+  {
+    float l, r, t, b;
+
+    /* -_offsets::::for: is minus the margin, 0 without one. */
+    [(XGServer *)server _offsets: &l : &r : &t : &b for: win_info];
+    x = NSMinX(rect) - l;
+    y = NSHeight(win_info->xframe) + b - NSMaxY(rect);
+  }
   width = NSWidth(rect);
   height = NSHeight(rect);
 
