@@ -41,6 +41,18 @@
 	window is registered, so its class wasn't known and it was typed
 	_DIALOG.
 	* Tests/x11/windowtype.m: New test.
+2026-10-06 Daniel Boyd <danieljboyd@icloud.com>
+
+	* Source/x11/XGServerWindow.m (argb_visual, -_compositorRuns,
+	-_compositorShowsAlpha): New.  A 32-bit visual with an alpha
+	channel (one per screen), and whether a compositing manager runs.
+	(-_windowGetsAlpha:): New.  A borderless window (menus, tool tips)
+	gets the 32-bit visual when GSBackBorderlessWindowAlpha is YES and a
+	compositing manager runs, so what the gui leaves transparent, such
+	as rounded corners, shows what is behind it.
+	(-window::::): Create such windows with the 32-bit visual.
+	* Tests/x11/FakeCompositor.h: New.  A compositing manager for tests.
+	* Tests/x11/borderlessalpha.m: New test.
 
 2026-07-22 Richard Frith-Macdonald <rfm@gnu.org>
 

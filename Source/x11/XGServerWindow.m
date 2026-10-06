@@ -40,6 +40,7 @@
 #include <AppKit/NSApplication.h>
 #include <AppKit/NSCursor.h>
 #include <AppKit/NSGraphics.h>
+#include <AppKit/NSPanel.h>
 #include <AppKit/NSWindow.h>
 #include <AppKit/NSImage.h>
 #include <AppKit/NSBitmapImageRep.h>
@@ -64,6 +65,9 @@
 #include <X11/cursorfont.h>
 #if HAVE_XCURSOR
 #include <X11/Xcursor/Xcursor.h>
+#endif
+#ifdef XRENDER
+#include <X11/extensions/Xrender.h>
 #endif
 #ifdef HAVE_XSHAPE
 #include <X11/extensions/shape.h>
@@ -611,6 +615,111 @@ BOOL AtomPresentAndPointsToItself(Display *dpy, Atom atom, Atom type)
   NSDebugLLog(@"Frame", @"X2O %lu, %x, %@, %@", win->number, style,
     NSStringFromRect(x), NSStringFromRect(o));
   return o;
+}
+
+/*
+ * A 32-bit visual with an alpha channel, and a colormap for it, for windows
+ * that show what is behind them where the gui leaves them transparent.
+ * (The screen context uses the default visual, which has no alpha.)
+ * NO when the screen has none. Looked up once per screen of the backend's
+ * one display, and kept for the life of the process.
+ */
+#define ARGB_SCREENS 8
+static BOOL
+argb_visual(Display *dpy, int screen, Visual **visual, Colormap *cmap)
+{
+  static Visual *foundVisual[ARGB_SCREENS];
+  static Colormap foundCmap[ARGB_SCREENS];
+  static BOOL looked[ARGB_SCREENS];
+  Visual *found = NULL;
+
+  if (screen < 0 || screen >= ARGB_SCREENS)
+    {
+      *visual = NULL;
+      *cmap = None;
+      return NO;
+    }
+  if (!looked[screen])
+    {
+#ifdef XRENDER
+      XVisualInfo templ, *vinfo;
+      int count, i;
+
+      templ.screen = screen;
+      templ.depth = 32;
+      templ.class = TrueColor;
+      vinfo = XGetVisualInfo(dpy, VisualScreenMask | VisualDepthMask
+			     | VisualClassMask, &templ, &count);
+      for (i = 0; vinfo != NULL && i < count && found == NULL; i++)
+	{
+	  XRenderPictFormat *format
+	    = XRenderFindVisualFormat(dpy, vinfo[i].visual);
+
+	  if (format != NULL && format->type == PictTypeDirect
+	    && format->direct.alphaMask)
+	    {
+	      found = vinfo[i].visual;
+	      foundVisual[screen] = found;
+	      foundCmap[screen] = XCreateColormap(dpy, RootWindow(dpy, screen),
+						  found, AllocNone);
+	    }
+	}
+      if (vinfo != NULL)
+	{
+	  XFree(vinfo);
+	}
+#endif
+      looked[screen] = YES;
+    }
+  *visual = foundVisual[screen];
+  *cmap = foundCmap[screen];
+  return *visual != NULL;
+}
+
+/*
+ * Whether a compositing manager runs on the default screen: it owns the
+ * _NET_WM_CM_S<n> selection.
+ */
+- (BOOL) _compositorRuns
+{
+  char name[32];
+
+  snprintf(name, sizeof(name), "_NET_WM_CM_S%d", defScreen);
+  return XGetSelectionOwner(dpy, XInternAtom(dpy, name, False)) != None;
+}
+
+/*
+ * Whether a window can show what's behind it: a compositing manager draws
+ * its transparency (without one transparent pixels show black), and the
+ * display has a 32-bit visual.
+ */
+- (BOOL) _compositorShowsAlpha
+{
+  Visual *visual;
+  Colormap cmap;
+
+  return [self _compositorRuns]
+    && argb_visual(dpy, defScreen, &visual, &cmap);
+}
+
+/*
+ * A borderless window (menus, tool tips) gets an alpha channel when
+ * GSBackBorderlessWindowAlpha is YES (a theme that draws them with rounded
+ * corners sets it in its GSThemeDomain) and the compositing manager shows
+ * transparency: what the gui leaves transparent, such as the corners, then
+ * shows what's behind the window.
+ */
+- (BOOL) _windowGetsAlpha: (unsigned int)style
+{
+  if ((style & (NSTitledWindowMask | NSClosableWindowMask
+		| NSMiniaturizableWindowMask | NSResizableWindowMask
+		| NSDocModalWindowMask | NSIconWindowMask | NSMiniWindowMask)) != 0
+    || [[NSUserDefaults standardUserDefaults]
+	 boolForKey: @"GSBackBorderlessWindowAlpha"] == NO)
+    {
+      return NO;
+    }
+  return [self _compositorShowsAlpha];
 }
 
 /*
@@ -2106,17 +2215,41 @@ _wmTestErrorHandler(Display *display, XErrorEvent *event)
 
   window->xwn_attrs.override_redirect = False;
 
-  window->ident = XCreateWindow(dpy, window->root,
-				NSMinX(frame), NSMinY(frame),
-				NSWidth(frame), NSHeight(frame),
-				0,
-				context->depth,
-				CopyFromParent,
-				context->visual,
-                                // Don't set the CWBackPixel, as the background of the
-                                // window may be different.
-				(CWColormap | CWBorderPixel | CWOverrideRedirect),
-				&window->xwn_attrs);
+  if ([self _windowGetsAlpha: style])
+    {
+      Visual *visual;
+      Colormap cmap;
+
+      /* An alpha channel for what the gui leaves transparent, which
+	 starts transparent. */
+      argb_visual(dpy, defScreen, &visual, &cmap);
+      window->depth = 32;
+      window->xwn_attrs.colormap = cmap;
+      window->xwn_attrs.border_pixel = 0;
+      window->xwn_attrs.background_pixel = 0;
+      window->ident = XCreateWindow(dpy, window->root,
+				    NSMinX(frame), NSMinY(frame),
+				    NSWidth(frame), NSHeight(frame),
+				    0, 32, InputOutput, visual,
+				    (CWColormap | CWBorderPixel | CWBackPixel
+				     | CWOverrideRedirect),
+				    &window->xwn_attrs);
+    }
+  else
+    {
+      window->ident = XCreateWindow(dpy, window->root,
+				    NSMinX(frame), NSMinY(frame),
+				    NSWidth(frame), NSHeight(frame),
+				    0,
+				    context->depth,
+				    CopyFromParent,
+				    context->visual,
+				    // Don't set the CWBackPixel, as the background
+				    // of the window may be different.
+				    (CWColormap | CWBorderPixel
+				     | CWOverrideRedirect),
+				    &window->xwn_attrs);
+    }
 
   /*
    * Mark the window as the application with name & class so the WM can group it
