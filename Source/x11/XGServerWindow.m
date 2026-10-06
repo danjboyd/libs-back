@@ -473,6 +473,7 @@ BOOL AtomPresentAndPointsToItself(Display *dpy, Atom atom, Atom type)
                      : (unsigned int) style : (Window) win;
 - (void) _setSupportedWMProtocols: (gswindow_device_t *) window;
 - (unsigned long *) _getExtents: (Window)win;
+- (void) _setWindowType: (gswindow_device_t *)window;
 @end
 
 @implementation XGServer (WindowOps)
@@ -3128,6 +3129,12 @@ swapColors(unsigned char *image_data, NSBitmapImageRep *rep)
 
       setNormalHints(dpy, window);
       XSetWMHints(dpy, window->ident, &window->gen_hints);
+      /* The class is known now: a tool tip's level is set before its
+         window is registered. */
+      if (window->win_attrs.window_level == NSPopUpMenuWindowLevel)
+        {
+          [self _setWindowType: window];
+        }
 
       /*
        * If we are asked to set hints for the appicon and the window manager is
@@ -3592,6 +3599,95 @@ swapColors(unsigned char *image_data, NSBitmapImageRep *rep)
   return rect;
 }
 
+/*
+ * Sets _NET_WM_WINDOW_TYPE from the window's level and, where the level is
+ * shared, its class, as GTK types its windows: menus and tool tips are
+ * neither focused nor animated by window managers such as Mutter, and
+ * compositors key their shadows and fades on the type.  Called when the
+ * level changes and, for the pop-up menu level, again just before the
+ * window is mapped: a tool tip's level is set before its window is
+ * registered, so its class isn't known the first time.  A theme may set
+ * a finer type (a menu bar's menus as _DROPDOWN_MENU) after the level.
+ */
+- (void) _setWindowType: (gswindow_device_t *)window
+{
+  int level = window->win_attrs.window_level;
+  long data[2];
+  int len = 1;
+
+  if ((generic.wm & XGWM_EWMH) == 0
+    || (window->win_attrs.flags & GSWindowLevelAttr) == 0)
+    {
+      return;
+    }
+
+  data[0] = generic._NET_WM_WINDOW_TYPE_NORMAL_ATOM;
+  if (level == NSModalPanelWindowLevel)
+    {
+      data[0] = generic._NET_WM_WINDOW_TYPE_DIALOG_ATOM;
+    }
+  else if (level == NSMainMenuWindowLevel)
+    {
+      data[0] = generic._NET_WM_WINDOW_TYPE_DOCK_ATOM;
+    }
+  else if (level == NSSubmenuWindowLevel
+           || level == NSTornOffMenuWindowLevel)
+    {
+      data[0] = generic._NET_WM_WINDOW_TYPE_MENU_ATOM;
+    }
+  else if (level == NSFloatingWindowLevel)
+    {
+      data[0] = generic._NET_WM_WINDOW_TYPE_UTILITY_ATOM;
+    }
+  else if (level == NSDockWindowLevel
+           || level == NSStatusWindowLevel)
+    {
+      data[0] = generic._NET_WM_WINDOW_TYPE_DOCK_ATOM;
+    }
+  else if (level == NSPopUpMenuWindowLevel)
+    {
+      NSWindow *nswin = GSWindowWithNumber(window->number);
+      NSString *className = [nswin className];
+
+      /* A window manager that doesn't know the first type (Openbox 3.6
+         knows _POPUP_MENU but not _TOOLTIP or _DND) uses the second, as
+         before. */
+      data[1] = generic._NET_WM_WINDOW_TYPE_DIALOG_ATOM;
+      if ([className isEqual: @"GSTTPanel"])
+        {
+          data[0] = generic._NET_WM_WINDOW_TYPE_TOOLTIP_ATOM;
+          len = 2;
+        }
+      else if ([className isEqual: @"NSMenuPanel"])
+        {
+          data[0] = generic._NET_WM_WINDOW_TYPE_POPUP_MENU_ATOM;
+          len = 2;
+        }
+      else if ([className isEqual: @"XGRawWindow"]
+               || [className isEqual: @"GSRawWindow"])
+        {
+          data[0] = generic._NET_WM_WINDOW_TYPE_DND_ATOM;
+          len = 2;
+        }
+      else
+        {
+          data[0] = generic._NET_WM_WINDOW_TYPE_DIALOG_ATOM;
+        }
+    }
+  else if (level == NSDesktopWindowLevel)
+    {
+      data[0] = generic._NET_WM_WINDOW_TYPE_DESKTOP_ATOM;
+    }
+
+/* Warning ... X-bug .. when we specify 32bit data X actually expects data
+ * of type 'long' or 'unsigned long' even on machines where those types
+ * hold 64bit values.
+ */
+  XChangeProperty(dpy, window->ident, generic._NET_WM_WINDOW_TYPE_ATOM,
+                  XA_ATOM, 32, PropModeReplace,
+                  (unsigned char *)&data, len);
+}
+
 - (void) setwindowlevel: (int)level : (int)win
 {
   gswindow_device_t *window;
@@ -3635,70 +3731,17 @@ swapColors(unsigned char *image_data, NSBitmapImageRep *rep)
 
       if ((generic.wm & XGWM_EWMH) != 0)
         {
-          int len;
-          long data[2];
-          BOOL skipTaskbar = NO;
+          BOOL skipTaskbar = (level == NSModalPanelWindowLevel
+                              || level == NSMainMenuWindowLevel
+                              || level == NSSubmenuWindowLevel
+                              || level == NSTornOffMenuWindowLevel
+                              || level == NSFloatingWindowLevel
+                              || level == NSDockWindowLevel
+                              || level == NSStatusWindowLevel
+                              || level == NSPopUpMenuWindowLevel
+                              || level == NSDesktopWindowLevel);
 
-          data[0] = generic._NET_WM_WINDOW_TYPE_NORMAL_ATOM;
-          data[1] = None;
-          len = 1;
-
-          if (level == NSModalPanelWindowLevel)
-            {
-              data[0] = generic._NET_WM_WINDOW_TYPE_NORMAL_ATOM;
-              skipTaskbar = YES;
-            }
-          else if (level == NSMainMenuWindowLevel)
-            {
-              data[0] = generic._NET_WM_WINDOW_TYPE_DOCK_ATOM;
-              skipTaskbar = YES;
-            }
-          else if (level == NSSubmenuWindowLevel
-                   || level == NSTornOffMenuWindowLevel)
-            {
-              data[0] = generic._NET_WM_WINDOW_TYPE_MENU_ATOM;
-              skipTaskbar = YES;
-            }
-          else if (level == NSFloatingWindowLevel)
-            {
-              data[0] = generic._NET_WM_WINDOW_TYPE_UTILITY_ATOM;
-              skipTaskbar = YES;
-            }
-          else if (level == NSDockWindowLevel
-                   || level == NSStatusWindowLevel)
-            {
-              data[0] =generic._NET_WM_WINDOW_TYPE_DOCK_ATOM;
-              skipTaskbar = YES;
-            }
-          // Does this belong into a different category?
-          else if (level == NSPopUpMenuWindowLevel)
-            {
-                NSWindow *nswin = GSWindowWithNumber(window->number);
-
-                if ([[nswin className] isEqual: @"GSTTPanel"])
-                  {
-                    data[0] = generic._NET_WM_WINDOW_TYPE_TOOLTIP_ATOM;
-                  }
-                else
-                  {
-//              data[0] = generic._NET_WM_WINDOW_TYPE_POPUP_MENU_ATOM;
-                    data[0] = generic._NET_WM_WINDOW_TYPE_DIALOG_ATOM;
-                  }
-              skipTaskbar = YES;
-            }
-          else if (level == NSDesktopWindowLevel)
-            {
-              data[0] = generic._NET_WM_WINDOW_TYPE_DESKTOP_ATOM;
-              skipTaskbar = YES;
-            }
-
-/* Warning ... X-bug .. when we specify 32bit data X actually expects data
- * of type 'long' or 'unsigned long' even on machines where those types
- * hold 64bit values.
- */
-          XChangeProperty(dpy, window->ident, generic._NET_WM_WINDOW_TYPE_ATOM,
-                          XA_ATOM, 32, PropModeReplace,
-                          (unsigned char *)&data, len);
+          [self _setWindowType: window];
 
 /*
  * Change _NET_WM_STATE based on window level.
