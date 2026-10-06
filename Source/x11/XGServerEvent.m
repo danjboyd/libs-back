@@ -63,6 +63,9 @@
 #ifdef HAVE_XRANDR
 #include <X11/extensions/Xrandr.h>
 #endif
+#if HAVE_XFIXES
+#include <X11/extensions/Xfixes.h>
+#endif
 
 #include "math.h"
 #include <X11/keysym.h>
@@ -133,6 +136,7 @@ static void (*procEvent)(id, SEL, XEvent*) = 0;
                   forMode: (NSString*)mode;
 - (int) XGErrorHandler: (Display*)display : (XErrorEvent*)err;
 - (void) processEvent: (XEvent *) event;
+- (void) _settleShadowOf: (gswindow_device_t *)win;
 - (NSEvent *)_handleTakeFocusAtom: (XEvent)xEvent 
         	       forContext: (NSGraphicsContext *)gcontext;
 @end
@@ -354,7 +358,7 @@ posixFileDescriptor: (NSPosixFileDescriptor*)fileDescriptor
   NSPoint o;
   float t, b, l, r;
 
-  [self styleoffsets: &l : &r : &t : &b : style : win->ident];
+  [self _offsets: &l : &r : &t : &b for: win];
   o.x = x.x + l;
   o.y = NSHeight(win->xframe) - x.y + b;
 
@@ -997,7 +1001,20 @@ posixFileDescriptor: (NSPosixFileDescriptor*)fileDescriptor
               }
 
             cWin->xframe = x;
+            /* A window manager may configure the window for a new state
+               (maximized, restored) before the PropertyNotify for it
+               arrives: the margin changes here then. */
+            if (!cWin->shadow_settling && cWin->shadow_eligible
+              && [self _updateShadowSizeOf: cWin])
+              {
+                [self _shadowSizeChangedFor: cWin];
+              }
             n = [self _XFrameToOSFrame: x for: cWin];
+            if (!NSEqualSizes(r.size, x.size))
+              {
+                /* The visible part, which takes pointer events. */
+                [self _updateShadowOf: cWin];
+              }
             NSDebugLLog(@"Moving",
                         @"Update win %lu:\n   original:%@\n   new:%@",
                         cWin->number, NSStringFromRect(r), 
@@ -1020,6 +1037,14 @@ posixFileDescriptor: (NSPosixFileDescriptor*)fileDescriptor
               {
                 cWin->siz_hints.x = h.origin.x;
                 cWin->siz_hints.y = h.origin.y;
+              }
+
+            /* Fitting the window to a new shadow margin: the gui hears
+               of the frame it settles on (-_shadowSizeChangedFor:). */
+            if (cWin->shadow_settling)
+              {
+                [self _settleShadowOf: cWin];
+                break;
               }
 
             /*
@@ -1218,6 +1243,17 @@ posixFileDescriptor: (NSPosixFileDescriptor*)fileDescriptor
               {
                 NSRect rect;
                 NSTimeInterval ts = (NSTimeInterval)generic.lastMotion;
+
+                /* The gui doesn't draw the shadow margin, which is outside
+                   its window: copy it from the backing store. */
+                if ((cWin->shadow[0] || cWin->shadow[1] || cWin->shadow[2]
+                     || cWin->shadow[3])
+                    && (cWin->gdriverProtocol & GDriverHandlesExpose))
+                  {
+                    [self _addExposedRectangle: rectangle
+                                              : cWin->number
+                                              : NO];
+                  }
                 
                 rect = [self _XWinRectToOSWinRect: NSMakeRect(
                         rectangle.x, rectangle.y, rectangle.width, rectangle.height)
@@ -1618,6 +1654,18 @@ posixFileDescriptor: (NSPosixFileDescriptor*)fileDescriptor
         NSDebugLLog(@"NSEvent", @"%lu PropertyNotify - '%s'\n",
                     xEvent.xproperty.window,
                     XGetAtomName(dpy, xEvent.xproperty.atom));
+	/* Maximized, fullscreen or tiled windows have no shadow margin. */
+	if (xEvent.xproperty.atom == generic._NET_WM_STATE_ATOM
+	  || xEvent.xproperty.atom == generic._GTK_EDGE_CONSTRAINTS_ATOM)
+	  {
+	    gswindow_device_t *sWin
+	      = [XGServer _windowForXWindow: xEvent.xproperty.window];
+
+	    if (sWin != 0 && [self _updateShadowSizeOf: sWin])
+	      {
+		[self _shadowSizeChangedFor: sWin];
+	      }
+	  }
 	if (xEvent.xproperty.atom == generic.WM_STATE_ATOM)
 	  {
 	    if (cWin == 0 || xEvent.xproperty.window != cWin->ident)
@@ -1923,6 +1971,15 @@ posixFileDescriptor: (NSPosixFileDescriptor*)fileDescriptor
 
             // We shouldn't get here unless we forgot to trap an event above
       default:
+#if HAVE_XFIXES
+        /* The compositing manager started or stopped. */
+        if (xfixesEventBase >= 0
+            && xEvent.type == xfixesEventBase + XFixesSelectionNotify)
+          {
+            [self _compositorChanged];
+            break;
+          }
+#endif
 #ifdef XSHM
         if (xEvent.type == XShmGetEventBase(dpy)+ShmCompletion
             && [gcontext respondsToSelector: @selector(gotShmCompletion:)])
@@ -2713,6 +2770,106 @@ process_modifier_flags(unsigned int state)
 - (id <NSDraggingInfo>)dragInfo
 {
   return [XGDragView sharedDragView];
+}
+
+/*
+ * The shadow margin of a window changed (-_updateShadowSizeOf:): tell the
+ * window manager, which fits the X window to the new margin. On a maximize
+ * or restore it has usually configured the window for the old margin
+ * already, so two ConfigureNotify events follow, the first for a size the
+ * window doesn't keep. The gui hears of none of them: once they stop
+ * (GSShadowSettleQuiet with none, or GSShadowSettleLimit after the margin
+ * changed), it gets the frame the window ended with, as one resize. (On a
+ * restore the window manager usually configures the restored size before
+ * it changes the state, while the window has no margin: the gui sees that
+ * resize too.)
+ */
+static const NSTimeInterval GSShadowSettleQuiet = 0.05;
+static const NSTimeInterval GSShadowSettleLimit = 0.3;
+
+- (void) _settleShadowOf: (gswindow_device_t *)win
+{
+  NSNumber *number = [NSNumber numberWithInt: win->number];
+  NSTimeInterval delay = GSShadowSettleQuiet;
+  NSTimeInterval left;
+
+  left = win->shadow_settle_start + GSShadowSettleLimit
+    - [NSDate timeIntervalSinceReferenceDate];
+  if (left < delay)
+    {
+      delay = MAX(left, 0.0);
+    }
+  [NSObject cancelPreviousPerformRequestsWithTarget: self
+					   selector: @selector(_shadowSettled:)
+					     object: number];
+  [self performSelector: @selector(_shadowSettled:)
+	     withObject: number
+	     afterDelay: delay
+		inModes: [NSArray arrayWithObjects: NSDefaultRunLoopMode,
+				  NSEventTrackingRunLoopMode,
+				  NSModalPanelRunLoopMode, nil]];
+}
+
+- (void) _shadowSizeChangedFor: (gswindow_device_t *)win
+{
+  [self _updateShadowOf: win];
+  if (!win->shadow_settling)
+    {
+      win->shadow_settling = YES;
+      win->shadow_settle_start = [NSDate timeIntervalSinceReferenceDate];
+    }
+  [self _settleShadowOf: win];
+}
+
+- (void) _shadowSettled: (NSNumber *)windowNumber
+{
+  gswindow_device_t *win = [XGServer _windowWithTag: [windowNumber intValue]];
+  NSWindow *window;
+  NSGraphicsContext *gcontext = GSCurrentContext();
+  NSRect n;
+  NSEvent *e;
+
+  if (win == 0 || !win->shadow_settling)
+    {
+      return;
+    }
+  win->shadow_settling = NO;
+  window = [NSApp windowWithWindowNumber: win->number];
+  n = [self _XFrameToOSFrame: win->xframe for: win];
+  if (window == nil)
+    {
+      return;
+    }
+  /* Sent even when the frame is the same: the X window, which the gui's
+     buffers follow, has the new margin. */
+  e = [NSEvent otherEventWithType: NSAppKitDefined
+			 location: n.origin
+		    modifierFlags: 0
+			timestamp: 0
+		     windowNumber: win->number
+			  context: gcontext
+			  subtype: GSAppKitWindowResized
+			    data1: n.size.width
+			    data2: n.size.height];
+  [window sendEvent: e];
+  /* The window manager's configures, and their exposures, came before the
+     buffers had the margin: show the whole window again, shadow and all,
+     from the new ones. */
+  XClearArea(dpy, win->ident, 0, 0, 0, 0, True);
+  if (!NSEqualPoints(n.origin, [window frame].origin))
+    {
+      e = [NSEvent otherEventWithType: NSAppKitDefined
+			     location: NSZeroPoint
+			modifierFlags: 0
+			    timestamp: 0
+			 windowNumber: win->number
+			      context: gcontext
+			      subtype: GSAppKitWindowMoved
+				data1: n.origin.x
+				data2: n.origin.y];
+      [window sendEvent: e];
+      win->monitor_id = [[window screen] screenNumber];
+    }
 }
 
 @end
