@@ -2,7 +2,10 @@
  * gui's drawing inside its visible part, opaque, with that part's corners
  * rounded (GSBackWindowCornerRadius), and round it a black shadow that is
  * strongest at the edge, fades out across the margin, and is stronger
- * below the window than above it.
+ * below the window than above it.  A popover (GSBackPopoverShadows: a
+ * borderless window marked with NSUtilityWindowMask, as a theme marks its
+ * menus) has a fainter, shorter shadow of its own, and its corners rounded
+ * by GSBackPopoverCornerRadius.
  *
  * The test forks a window manager that knows _GTK_FRAME_EXTENTS
  * (FakeCSDWindowManager.h) and a compositing manager (FakeCompositor.h),
@@ -112,6 +115,7 @@ main(int argc, const char **argv)
   pid_t			wm;
   pid_t			compositor;
   NSWindow		*window;
+  NSPanel		*popover;
   XWindowAttributes	a;
   XImage		*image;
   unsigned long		extents[4];
@@ -222,6 +226,64 @@ main(int argc, const char **argv)
   }
 #endif
   [window close];
+
+  setDefault(@"YES", @"GSBackPopoverShadows");
+  setDefault(@"12", @"GSBackPopoverCornerRadius");
+  popover = [[NSPanel alloc]
+    initWithContentRect: NSMakeRect(100, 100, 200, 120)
+	      styleMask: NSBorderlessWindowMask | NSUtilityWindowMask
+		backing: NSBackingStoreBuffered
+		  defer: NO];
+#if HAVE_XFIXES
+  image = grab(dpy, popover, &a, extents);
+  PASS(image != NULL && a.width > NSWidth([popover frame])
+    && a.height > NSHeight([popover frame]),
+    "a popover has a 32-bit X window with a margin round its frame");
+  if (image != NULL)
+    {
+      int	left = extents[0];
+      int	right = a.width - extents[1];
+      int	top = extents[2];
+      int	bottom = a.height - extents[3];
+      int	midX = (left + right) / 2;
+      int	midY = (top + bottom) / 2;
+
+      PASS(alphaAt(image, midX, midY) == 255
+	&& alphaAt(image, midX, top) == 255,
+	"the popover's contents are opaque");
+      PASS(alphaAt(image, left, top) < 128
+	&& alphaAt(image, right - 1, bottom - 1) < 128,
+	"the popover's corners are rounded off (%d, %d)",
+	alphaAt(image, left, top), alphaAt(image, right - 1, bottom - 1));
+      PASS(alphaAt(image, left - 1, midY) >= 10
+	&& alphaAt(image, left - 1, midY) <= 35,
+	"beside the popover the shadow is fainter than a window's (%d)",
+	alphaAt(image, left - 1, midY));
+      PASS(alphaAt(image, 0, midY) < alphaAt(image, left - 1, midY)
+	&& alphaAt(image, 0, midY) <= 4,
+	"the popover's shadow fades out across its margin (%d, %d)",
+	alphaAt(image, left - 1, midY), alphaAt(image, 0, midY));
+      PASS(alphaAt(image, midX, bottom) > alphaAt(image, midX, top - 1),
+	"the popover's shadow is stronger below it than above it (%d, %d)",
+	alphaAt(image, midX, bottom), alphaAt(image, midX, top - 1));
+      XDestroyImage(image);
+    }
+#else
+  {
+    Window	xwin;
+
+    [popover orderFront: nil];
+    [popover display];
+    [popover flushWindow];
+    spin(0.5);
+    xwin = (Window)[GSCurrentServer() windowDevice: [popover windowNumber]];
+    XSync((Display *)[GSCurrentServer() serverDevice], False);
+    PASS(XGetWindowAttributes(dpy, xwin, &a) != 0
+      && frameExtents(dpy, xwin, extents) == NO,
+      "without XFixes a popover has no margin to draw a shadow in");
+  }
+#endif
+  [popover close];
 
   fakeCompositorStop(dpy, compositor);
   fakeCSDWMStop(wm);

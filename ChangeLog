@@ -8,6 +8,32 @@
 
 2026-10-06 Daniel Boyd <danieljboyd@icloud.com>
 
+	Popover shadows: menus get libadwaita's popover shadow round their
+	rounded corners, in a transparent margin as windows do.
+	* Source/x11/XGServerWindow.m (popoverMargin, marginFor): New.  A
+	popover's margin, smaller than a window's.
+	(-_windowGetsPopoverShadow:): New.  A borderless window marked with
+	NSUtilityWindowMask (which a borderless window has no other use for;
+	a theme marks its menus) gets a popover's margin when
+	GSBackPopoverShadows is YES, on a window's terms: the gui draws the
+	decorations, the window manager lists _GTK_FRAME_EXTENTS and the
+	compositing manager shows transparency, which XFixes can follow
+	(-_compositorShowsMargin).  GSBackPopoverCornerRadius rounds its
+	corners.
+	(-window::::, -_updateShadowSizeOf:): Use the window's margin.
+	* Source/cairo/XGCairoModernSurface.m (box_shadow_layer,
+	popover_shadow_alpha): New.  libadwaita's popover box-shadow, two
+	blurred layers, each from the distance to the popover's rounded
+	outline (grown by its spread), so it follows the rounded corners.
+	(shadow_template, create_shadow): Take the kind of shadow; keep a
+	template for each.
+	* Headers/x11/XGServerWindow.h: Add shadow_popover to
+	gswindow_device_t.
+	* Tests/x11/shadowmargin.m, Tests/x11/shadowdrawing.m: Check
+	popovers.
+
+2026-10-06 Daniel Boyd <danieljboyd@icloud.com>
+
 	Window shadows and rounded corners for windows whose decorations the
 	gui draws (GSBackHandlesWindowDecorations or
 	GSX11HandlesWindowDecorations NO), as GTK's client-side decorations
