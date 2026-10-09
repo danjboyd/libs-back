@@ -146,6 +146,8 @@ static BOOL _enableCallbacks = YES;
 static NSEvent *process_key_event(WIN32Server *svr, 
                                   HWND hwnd, WPARAM wParam, 
                                   LPARAM lParam, NSEventType eventType);
+static NSEvent *process_caption_mouse_event(WIN32Server *svr, HWND hwnd,
+  LPARAM lParam, NSEventType eventType, WPARAM hit);
 static NSEvent *process_mouse_event(WIN32Server *svr, 
                                     HWND hwnd, WPARAM wParam, 
                                     LPARAM lParam, NSEventType eventType,
@@ -194,6 +196,127 @@ BOOL CALLBACK LoadDisplayMonitorInfo(HMONITOR hMonitor,
 - (void) setUsesNativeTaskbar: (BOOL) b
 {
   usesNativeTaskbar = b;
+}
+
+- (BOOL) clientDrawsCaptions
+{
+  return clientDrawsCaptions;
+}
+
+- (void) setClientDrawsCaptions: (BOOL)flag
+{
+  clientDrawsCaptions = flag;
+}
+
+/* Whether hwnd keeps Windows' frame but has no caption of Windows': the
+   gui draws it in the client area, which reaches the window's top. */
+- (BOOL) _clientDrawsCaptionOfWindow: (HWND)hwnd
+{
+  return clientDrawsCaptions && handlesWindowDecorations
+    && (GetWindowLongPtr(hwnd, GWL_STYLE) & WS_CAPTION) == WS_CAPTION;
+}
+
+- (void) setCaptionRegionRects: (const NSRect *)rects
+                         kinds: (const int *)kinds
+                         count: (unsigned)count
+                     forWindow: (int)winNum
+{
+  WIN_INTERN *win = (WIN_INTERN *)GetWindowLongPtr((HWND)winNum, GWLP_USERDATA);
+
+  if (win == NULL)
+    {
+      return;
+    }
+  free(win->captionRects);
+  free(win->captionKinds);
+  win->captionRects = NULL;
+  win->captionKinds = NULL;
+  win->captionRegionCount = 0;
+  if (count > 0)
+    {
+      win->captionRects = malloc(count * sizeof(NSRect));
+      win->captionKinds = malloc(count * sizeof(int));
+      memcpy(win->captionRects, rects, count * sizeof(NSRect));
+      memcpy(win->captionKinds, kinds, count * sizeof(int));
+      win->captionRegionCount = count;
+    }
+}
+
+/* WM_NCCALCSIZE for a window whose client draws its caption: Windows'
+   borders on the left, right and bottom, none at the top.  A maximized
+   window's frame lies outside the screen, so its client area then starts
+   below the top border, as it does at the sides. */
+- (void) _calcClientDrawsCaptionSize: (HWND)hwnd
+                                    : (WPARAM)wParam : (LPARAM)lParam
+{
+  RECT *r = wParam ? &((NCCALCSIZE_PARAMS *)lParam)->rgrc[0] : (RECT *)lParam;
+  LONG top = r->top;
+  LONG left = r->left;
+
+  DefWindowProcW(hwnd, WM_NCCALCSIZE, wParam, lParam);
+  r->top = top;
+  if (IsZoomed(hwnd))
+    {
+      r->top += r->left - left;
+    }
+  flags._eventHandled = YES;
+}
+
+/* WM_NCHITTEST for a window whose client draws its caption: Windows' own
+   answer for its borders; the top border's resizing in a band as deep as
+   the side border; then the caption regions the gui declared. */
+- (LRESULT) _clientDrawsCaptionHitTest: (HWND)hwnd
+                                      : (WPARAM)wParam : (LPARAM)lParam
+{
+  LRESULT hit = DefWindowProcW(hwnd, WM_NCHITTEST, wParam, lParam);
+  WIN_INTERN *win = (WIN_INTERN *)GetWindowLongPtr(hwnd, GWLP_USERDATA);
+  POINT p = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+  POINT origin = {0, 0};
+  RECT windowRect;
+  RECT client;
+  LONG border;
+  NSPoint location;
+  int i;
+
+  if (hit != HTCLIENT)
+    {
+      return hit;
+    }
+  GetWindowRect(hwnd, &windowRect);
+  GetClientRect(hwnd, &client);
+  ClientToScreen(hwnd, &origin);
+  ScreenToClient(hwnd, &p);
+  border = origin.x - windowRect.left;
+  if (!IsZoomed(hwnd)
+    && (GetWindowLongPtr(hwnd, GWL_STYLE) & WS_THICKFRAME)
+    && p.y < border)
+    {
+      if (p.x < 2 * border)
+        return HTTOPLEFT;
+      if (p.x >= client.right - 2 * border)
+        return HTTOPRIGHT;
+      return HTTOP;
+    }
+  if (win == NULL)
+    {
+      return HTCLIENT;
+    }
+  location = MSWindowPointToGS(self, hwnd, p.x, p.y);
+  for (i = (int)win->captionRegionCount - 1; i >= 0; i--)
+    {
+      if (NSPointInRect(location, win->captionRects[i]))
+        {
+          switch (win->captionKinds[i])
+            {
+              case GSCaptionRegionDrag: return HTCAPTION;
+              case GSCaptionRegionMinimizeButton: return HTMINBUTTON;
+              case GSCaptionRegionZoomButton: return HTMAXBUTTON;
+              case GSCaptionRegionCloseButton: return HTCLOSE;
+              default: return HTCLIENT;
+            }
+        }
+    }
+  return HTCLIENT;
 }
 
 - (void) callback: (id)sender
@@ -400,7 +523,12 @@ BOOL CALLBACK LoadDisplayMonitorInfo(HMONITOR hMonitor,
 	    [self setUsesNativeTaskbar:
 	      [defs boolForKey: @"GSBackUsesNativeTaskbar"]];
 	  }
-      }
+	if ([defs objectForKey: @"GSBackClientDrawsCaptions"])
+	  {
+	    [self setClientDrawsCaptions:
+	      [defs boolForKey: @"GSBackClientDrawsCaptions"]];
+	  }
+}
     }
   return self;
 }
@@ -1184,8 +1312,11 @@ LRESULT CALLBACK windowEnumCallback(HWND hwnd, LPARAM lParam)
       case WM_NCCREATE:
         return [self decodeWM_NCCREATEParams: wParam : lParam : hwnd];
         break;
-      case WM_NCCALCSIZE: 
-        [self decodeWM_NCCALCSIZEParams: wParam : lParam : hwnd]; 
+      case WM_NCCALCSIZE:
+        if ([self _clientDrawsCaptionOfWindow: hwnd])
+          [self _calcClientDrawsCaptionSize: hwnd : wParam : lParam];
+        else
+          [self decodeWM_NCCALCSIZEParams: wParam : lParam : hwnd];
         break;
       case WM_NCACTIVATE: 
         [self decodeWM_NCACTIVATEParams: wParam : lParam : hwnd]; 
@@ -1251,7 +1382,8 @@ LRESULT CALLBACK windowEnumCallback(HWND hwnd, LPARAM lParam)
           [self decodeWM_KILLFOCUSParams: wParam : lParam : hwnd]; 
         break;
       case WM_SETCURSOR:
-	if (wParam == (int)hwnd)
+	/* Windows sets the cursor over the frame (the resizing arrows) */
+	if (wParam == (int)hwnd && LOWORD(lParam) == HTCLIENT)
 	  {
 	    // Check if GNUstep should handle the cursor.
 	    if (should_handle_cursor)
@@ -1353,15 +1485,84 @@ LRESULT CALLBACK windowEnumCallback(HWND hwnd, LPARAM lParam)
 	
       case WM_NCHITTEST: //MOUSE
         NSDebugLLog(@"NSEvent", @"Got Message %s for %d", "NCHITTEST", hwnd);
+        if ([self _clientDrawsCaptionOfWindow: hwnd])
+          return [self _clientDrawsCaptionHitTest: hwnd : wParam : lParam];
         break;
       case WM_NCMOUSEMOVE: //MOUSE
 	NSDebugLLog(@"NSEvent", @"Got Message %s for %d", "NCMOUSEMOVE", hwnd);
+	if ([self _clientDrawsCaptionOfWindow: hwnd])
+	  {
+	    /* The pointer is over the caption the gui drew: hovering
+	       still reaches it (the caption buttons light up), and
+	       Windows still sees the move (Snap Layouts on the zoom
+	       button). */
+	    NSEvent *e = process_caption_mouse_event(self, hwnd, lParam,
+	      NSMouseMoved, wParam);
+
+	    if (e != nil)
+	      [GSCurrentServer() postEvent: e atStart: NO];
+	  }
+	break;
+      case WM_NCMOUSELEAVE: //MOUSE
+	if ([self _clientDrawsCaptionOfWindow: hwnd])
+	  {
+	    POINT p;
+	    RECT client;
+
+	    /* Only leaving the window counts, not moving into the client
+	       area from the caption the gui drew. */
+	    GetCursorPos(&p);
+	    if (WindowFromPoint(p) == hwnd)
+	      {
+		ScreenToClient(hwnd, &p);
+		GetClientRect(hwnd, &client);
+	      }
+	    else
+	      {
+		SetRectEmpty(&client);
+	      }
+	    if (!PtInRect(&client, p))
+	      {
+		NSEvent *e;
+
+		e = [NSEvent otherEventWithType: NSAppKitDefined
+				       location: NSMakePoint(-1,-1)
+				  modifierFlags: 0
+				      timestamp: 0
+				   windowNumber: (int)hwnd
+					context: GSCurrentContext()
+					subtype: GSAppKitWindowLeave
+					  data1: 0
+					  data2: 0];
+		[GSCurrentServer() postEvent: e atStart: YES];
+		should_handle_cursor = NO;
+	      }
+	  }
 	break;
       case WM_NCLBUTTONDOWN:  //MOUSE
+      case WM_NCLBUTTONDBLCLK:  //MOUSE
         NSDebugLLog(@"NSEvent", @"Got Message %s for %d", "NCLBUTTONDOWN", hwnd);
+        if ([self _clientDrawsCaptionOfWindow: hwnd]
+	  && (wParam == HTMINBUTTON || wParam == HTMAXBUTTON
+	    || wParam == HTCLOSE))
+	  {
+	    /* The gui's caption buttons work as its other buttons do;
+	       Windows would draw its own over them. */
+	    ev = process_caption_mouse_event(self, hwnd, lParam,
+	      NSLeftMouseDown, wParam);
+	    flags._eventHandled = (ev == nil);
+	  }
         break;
       case WM_NCLBUTTONUP: //MOUSE
         NSDebugLLog(@"NSEvent", @"Got Message %s for %d", "NCLBUTTONUP", hwnd);
+        if ([self _clientDrawsCaptionOfWindow: hwnd]
+	  && (wParam == HTMINBUTTON || wParam == HTMAXBUTTON
+	    || wParam == HTCLOSE))
+	  {
+	    ev = process_caption_mouse_event(self, hwnd, lParam,
+	      NSLeftMouseUp, wParam);
+	    flags._eventHandled = (ev == nil);
+	  }
         break;
       case WM_MOUSEACTIVATE: //MOUSE
         NSDebugLLog(@"NSEvent", @"Got Message %s for %d", "MOUSEACTIVATE", hwnd);
@@ -2247,6 +2448,11 @@ LRESULT CALLBACK windowEnumCallback(HWND hwnd, LPARAM lParam)
       *r = rect.right - 200;
       *t = 100 - rect.top;
       *b = rect.bottom - 200;
+      if (clientDrawsCaptions && (wstyle & WS_CAPTION) == WS_CAPTION)
+        {
+          /* The client area reaches the window's top (WM_NCCALCSIZE) */
+          *t = 0;
+        }
       //NSLog(@"Style 0x%X offset %f %f %f %f", wstyle, *l, *r, *t, *b);
     }
   else
@@ -3054,7 +3260,46 @@ process_mouse_event(WIN32Server *svr, HWND hwnd, WPARAM wParam, LPARAM lParam,
 }
 
 
-LRESULT CALLBACK MainWndProc(HWND hwnd, UINT uMsg, 
+/* A mouse message over the caption a window's gui drew (its position in
+   screen coordinates) as the client-area event the gui expects. */
+static NSEvent*
+process_caption_mouse_event(WIN32Server *svr, HWND hwnd, LPARAM lParam,
+  NSEventType eventType, WPARAM hit)
+{
+  POINT p = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+  WPARAM keys = 0;
+
+  ScreenToClient(hwnd, &p);
+  if (GetKeyState(VK_CONTROL) < 0)
+    keys |= MK_CONTROL;
+  if (GetKeyState(VK_SHIFT) < 0)
+    keys |= MK_SHIFT;
+  if (eventType == NSLeftMouseDown || GetKeyState(VK_LBUTTON) < 0)
+    keys |= MK_LBUTTON;
+  if (eventType == NSLeftMouseUp)
+    keys &= ~MK_LBUTTON;
+
+  if (!should_handle_cursor)
+    {
+      /* Tell the gui the pointer is in the window, and Windows to say when
+         it leaves the frame (WM_NCMOUSELEAVE): process_mouse_event would
+         track the client area, which the pointer isn't in, and get a
+         WM_MOUSELEAVE straight away. */
+      TRACKMOUSEEVENT tme;
+
+      should_handle_cursor = YES;
+      update_cursor = YES;
+      tme.cbSize = sizeof(tme);
+      tme.dwFlags = TME_LEAVE | TME_NONCLIENT;
+      tme.hwndTrack = hwnd;
+      tme.dwHoverTime = 0;
+      TrackMouseEvent(&tme);
+    }
+  return process_mouse_event(svr, hwnd, keys, MAKELPARAM(p.x, p.y),
+    eventType, WM_MOUSEMOVE);
+}
+
+LRESULT CALLBACK MainWndProc(HWND hwnd, UINT uMsg,
 			     WPARAM wParam, LPARAM lParam)
 {
   WIN32Server	*ctxt = (WIN32Server *)GSCurrentServer();
