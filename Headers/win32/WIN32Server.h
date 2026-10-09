@@ -81,6 +81,15 @@
 #define EVENT_WINDOW(lp) (GSWindowWithNumber((int)lp)) 
 
 DWORD windowStyleForGSStyle(unsigned int style);
+
+/* The kinds of caption region (-setCaptionRegionRects:kinds:count:forWindow:) */
+typedef enum _GSCaptionRegionKind
+{
+  GSCaptionRegionDrag = 1,
+  GSCaptionRegionMinimizeButton = 2,
+  GSCaptionRegionZoomButton = 3,
+  GSCaptionRegionCloseButton = 4
+} GSCaptionRegionKind;
    
 typedef struct w32serverFlags 
 {
@@ -92,6 +101,7 @@ typedef struct w32serverFlags
 {
   BOOL handlesWindowDecorations;
   BOOL usesNativeTaskbar;
+  BOOL clientDrawsCaptions;
 
   serverFlags flags;
   HINSTANCE hinstance;
@@ -108,6 +118,31 @@ typedef struct w32serverFlags
 
 - (BOOL) usesNativeTaskbar;
 - (void) setUsesNativeTaskbar: (BOOL) b;
+
+/** Whether titled windows keep Windows' frame (borders, shadow, Snap and
+ * the system menu) but leave the caption to the gui: the client area
+ * reaches the window's top edge, and the window's decoration view draws
+ * the title, the caption buttons and anything else in that row.  Only
+ * used when the server handles window decorations.  Set it before any
+ * window is created (the GSBackClientDrawsCaptions default, or a theme
+ * as it loads).
+ */
+- (BOOL) clientDrawsCaptions;
+- (void) setClientDrawsCaptions: (BOOL)flag;
+
+/** Declares the parts of a window's caption row the gui drew, for a
+ * window whose client draws its caption.  Each rect, in the window's base
+ * coordinates, has a kind from GSCaptionRegionKind: the parts that drag
+ * the window (and maximize it on a double click, and show the system menu
+ * on a right click), and its minimize, zoom and close buttons, which Windows
+ * also needs to know about (the zoom button shows Snap Layouts).  The
+ * latest region containing a point wins; a point in none is the client's.
+ * Clicks on the buttons reach the gui as ordinary mouse events.
+ */
+- (void) setCaptionRegionRects: (const NSRect *)rects
+                         kinds: (const int *)kinds
+                         count: (unsigned)count
+                     forWindow: (int)win;
 
 + (void) initializeBackend;
 
@@ -237,6 +272,9 @@ typedef struct _win_intern {
 #if (BUILD_GRAPHICS==GRAPHICS_cairo)
   void *surface;
 #endif
+  NSRect *captionRects;            // set by -setCaptionRegionRects:...
+  int *captionKinds;
+  unsigned captionRegionCount;
 } WIN_INTERN;
 
 /* Create a drawable of the given size for a device context.

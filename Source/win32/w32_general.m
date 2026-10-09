@@ -75,6 +75,8 @@
       DeleteObject(old);
       DeleteDC(win->hdc);
     }
+  free(win->captionRects);
+  free(win->captionKinds);
   free(win);
   free((IME_INFO_T*)GetWindowLongPtr(hwnd, IME_INFO));
   flags._eventHandled=YES;
