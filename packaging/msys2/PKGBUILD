@@ -1,0 +1,69 @@
+# MSYS2's mingw-w64-gnustep-back (msys2/MINGW-packages, 0.32.0-6), built
+# from this checkout: the 0.32.0 release with the changes the carry branch
+# adds (packaging/README.md). It replaces the stock package's files, and its
+# version (0.32.0.N) is newer than the stock 0.32.0 so pacman keeps it.
+#
+#   cd packaging/msys2 && MINGW_ARCH=clang64 makepkg-mingw -sCf
+
+_realname=gnustep-back
+pkgbase=mingw-w64-${_realname}
+pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}")
+pkgver=0.32.0.1
+pkgrel=1
+pkgdesc="GNUstep GUI Backend, with danjboyd/libs-back's carried changes (mingw-w64)"
+arch=('any')
+mingw_arch=('clang64')
+url='https://github.com/danjboyd/libs-back'
+license=('spdx:LGPL-2.1-or-later')
+makedepends=("${MINGW_PACKAGE_PREFIX}-autotools"
+             "${MINGW_PACKAGE_PREFIX}-clang"
+             "${MINGW_PACKAGE_PREFIX}-lld"
+             "${MINGW_PACKAGE_PREFIX}-gnustep-make"
+             rsync)
+depends=("${MINGW_PACKAGE_PREFIX}-gnustep-gui"
+         "${MINGW_PACKAGE_PREFIX}-cairo")
+provides=("${MINGW_PACKAGE_PREFIX}-${_realname}=0.32.0")
+source=()
+sha256sums=()
+
+prepare() {
+  # The checkout this PKGBUILD is in, without its packaging and git data.
+  rsync --recursive --times --links --delete \
+    --exclude=/packaging --exclude=/.git --exclude=/.github \
+    "${startdir}/../../" "${srcdir}/build-${MSYSTEM}/"
+}
+
+build() {
+  cd "${srcdir}/build-${MSYSTEM}"
+
+  . ${MINGW_PREFIX}/share/GNUstep/Makefiles/GNUstep.sh
+
+  export LDFLAGS="-lc++"
+
+  ./configure \
+    --enable-graphics=cairo \
+    --prefix="${MINGW_PREFIX}" \
+    --build="${MINGW_CHOST}" \
+    --host="${MINGW_CHOST}" \
+    --target="${MINGW_CHOST}" \
+    CC="$MINGW_PREFIX/bin/clang" \
+    CXX="$MINGW_PREFIX/bin/clang++"
+
+  # Clang 23 rejects gnustep-base's __block ivar (BLOCK_SCOPE in
+  # NSBackgroundActivityScheduler.h); libs-back uses no blocks, so __block
+  # can mean nothing (gnustep-make adds -fblocks after these flags).
+  make \
+    messages=yes \
+    CC="$MINGW_PREFIX/bin/clang" \
+    CXX="$MINGW_PREFIX/bin/clang++" \
+    OBJCFLAGS="-U__block -D__block= -Wno-error=incompatible-pointer-types -Wno-int-to-pointer-cast -Wno-pointer-to-int-cast -Wno-format"
+}
+
+package() {
+  cd "${srcdir}/build-${MSYSTEM}"
+
+  make install DESTDIR="${pkgdir}"
+
+  install -Dm644 "${srcdir}/build-${MSYSTEM}/COPYING.LIB" \
+    "${pkgdir}${MINGW_PREFIX}/share/licenses/${_realname}/COPYING.LIB"
+}
