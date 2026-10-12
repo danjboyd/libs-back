@@ -1,3 +1,11 @@
+2026-10-12 Daniel Boyd <danieljboyd@icloud.com>
+
+	* Source/x11/XGServerWindow.m (-nativeWindow:::::):
+	Take the X window id itself, as -windowDevice: returns it, instead of
+	dereferencing it as a pointer to one.  -[NSWindow initWithWindowRef:]
+	with the -windowRef of another window crashed.
+	* Tests/x11/windowref.m: Test wrapping a window's device.
+
 2026-07-22 Richard Frith-Macdonald <rfm@gnu.org>
 
 	* Source/x11/XGServerEvent.m:

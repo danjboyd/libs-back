@@ -2252,7 +2252,10 @@ _wmTestErrorHandler(Display *display, XErrorEvent *event)
   Window windowRef;
   NSRect xframe;
 
-  windowRef = *((Window*)winref);
+  /* winref is what -windowDevice: returns (and so -[NSWindow windowRef]):
+   * the X window id itself, not a pointer to one.
+   */
+  windowRef = (Window)(uintptr_t)winref;
   NSDebugLLog(@"XGTrace", @"nativeWindow: %lu", windowRef);
   if (!XGetWindowAttributes(dpy, windowRef, &win_attributes))
     {
