@@ -275,6 +275,7 @@ typedef struct _win_intern {
   NSRect *captionRects;            // set by -setCaptionRegionRects:...
   int *captionKinds;
   unsigned captionRegionCount;
+  BOOL hasShadowFrame;             // a borderless window given a shadow
 } WIN_INTERN;
 
 #endif /* _WIN32Server_h_INCLUDE */
