@@ -119,6 +119,9 @@ typedef struct w32serverFlags
  */
 - (BOOL) isPerMonitorDPIAware;
 
+/** The Windows monitor showing screen, or NULL. */
+- (HMONITOR) monitorHandleForScreen: (int)screen;
+
 + (void) initializeBackend;
 
 - (LRESULT) windowEventProc: (HWND)hwnd : (UINT)uMsg 
