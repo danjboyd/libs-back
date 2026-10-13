@@ -62,6 +62,7 @@
 #endif
 
 #include <math.h>
+#include <uxtheme.h>     // MARGINS, for DwmExtendFrameIntoClientArea
 
 // The Windows SDK declares BOOL as an int.  Objective C defines BOOl as a char.
 // Those two types clash.  MinGW's implementation of the Windows SDK uses the WINBOOL
@@ -194,6 +195,16 @@ BOOL CALLBACK LoadDisplayMonitorInfo(HMONITOR hMonitor,
 - (void) setUsesNativeTaskbar: (BOOL) b
 {
   usesNativeTaskbar = b;
+}
+
+/* Whether hwnd is a borderless window given a shadow (-setShadow::): it
+   has a frame for DWM's shadow, but its client area is the whole window. */
+static BOOL
+hasShadowFrame(HWND hwnd)
+{
+  WIN_INTERN *win = (WIN_INTERN *)GetWindowLongPtr(hwnd, GWLP_USERDATA);
+
+  return win != NULL && win->hasShadowFrame;
 }
 
 - (void) callback: (id)sender
@@ -1185,7 +1196,10 @@ LRESULT CALLBACK windowEnumCallback(HWND hwnd, LPARAM lParam)
         return [self decodeWM_NCCREATEParams: wParam : lParam : hwnd];
         break;
       case WM_NCCALCSIZE: 
-        [self decodeWM_NCCALCSIZEParams: wParam : lParam : hwnd]; 
+        if (hasShadowFrame(hwnd))
+          flags._eventHandled = YES; // the client area is the whole window
+        else
+          [self decodeWM_NCCALCSIZEParams: wParam : lParam : hwnd]; 
         break;
       case WM_NCACTIVATE: 
         [self decodeWM_NCACTIVATEParams: wParam : lParam : hwnd]; 
@@ -1353,6 +1367,8 @@ LRESULT CALLBACK windowEnumCallback(HWND hwnd, LPARAM lParam)
 	
       case WM_NCHITTEST: //MOUSE
         NSDebugLLog(@"NSEvent", @"Got Message %s for %d", "NCHITTEST", hwnd);
+        if (hasShadowFrame(hwnd))
+          return HTCLIENT; // the frame neither moves nor resizes it
         break;
       case WM_NCMOUSEMOVE: //MOUSE
 	NSDebugLLog(@"NSEvent", @"Got Message %s for %d", "NCMOUSEMOVE", hwnd);
@@ -1690,6 +1706,10 @@ LRESULT CALLBACK windowEnumCallback(HWND hwnd, LPARAM lParam)
 	   @"-stylewindow: : called when [self handlesWindowDecorations] == NO");
 
   NSDebugLLog(@"WTrace", @"stylewindow: %d : %d", style, winNum);
+  if (hasShadowFrame((HWND)winNum))
+    {
+      wstyle |= WS_CAPTION | WS_THICKFRAME;
+    }
   SetWindowLongPtr((HWND)winNum, GWL_STYLE, wstyle);
   SetWindowLongPtr((HWND)winNum, GWL_EXSTYLE, estyle);
 }
@@ -2191,6 +2211,67 @@ LRESULT CALLBACK windowEnumCallback(HWND hwnd, LPARAM lParam)
   p.x = size.width;
   p.y = size.height;
   win->minmax.ptMinTrackSize = p;
+}
+
+/** Gives a borderless window a shadow, or takes it away, as Windows'
+ * menus, tool tips and flyouts have one.  DWM draws a shadow (and, on
+ * Windows 11, rounds the corners) only around a frame, so the window gets
+ * a thick frame and a caption that WM_NCCALCSIZE gives no room, and DWM's
+ * frame reaches one pixel into the client area.  The client area stays
+ * the whole window, and the frame neither moves nor resizes it.  A window
+ * with a frame of its own already has Windows' shadow.
+ */
+- (void) setShadow: (BOOL)hasShadow : (int)winNum
+{
+  typedef HRESULT (WINAPI *ExtendFrameFunc)(HWND, const MARGINS *);
+  static ExtendFrameFunc extendFrame = NULL;
+  static BOOL looked = NO;
+  HWND hwnd = (HWND)winNum;
+  WIN_INTERN *win = (WIN_INTERN *)GetWindowLongPtr(hwnd, GWLP_USERDATA);
+  LONG_PTR style;
+  MARGINS margins = {0, 0, 0, 0};
+
+  if (win == NULL || win->hasShadowFrame == hasShadow)
+    {
+      return;
+    }
+  style = GetWindowLongPtr(hwnd, GWL_STYLE);
+  if (hasShadow && (style & (WS_CAPTION | WS_THICKFRAME)) != 0)
+    {
+      return;
+    }
+  if (!looked)
+    {
+      HMODULE dwm = LoadLibraryA("dwmapi.dll");
+
+      looked = YES;
+      if (dwm != NULL)
+        {
+          extendFrame = (ExtendFrameFunc)(void *)GetProcAddress(dwm,
+            "DwmExtendFrameIntoClientArea");
+        }
+    }
+  if (extendFrame == NULL)
+    {
+      return;
+    }
+
+  NSDebugLLog(@"WTrace", @"setShadow: %d : %d", hasShadow, winNum);
+  win->hasShadowFrame = hasShadow;
+  if (hasShadow)
+    {
+      style |= WS_CAPTION | WS_THICKFRAME;
+      margins.cyBottomHeight = 1;
+    }
+  else
+    {
+      style &= ~(WS_CAPTION | WS_THICKFRAME);
+    }
+  SetWindowLongPtr(hwnd, GWL_STYLE, style);
+  extendFrame(hwnd, &margins);
+  SetWindowPos(hwnd, NULL, 0, 0, 0, 0,
+               SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE
+               | SWP_FRAMECHANGED);
 }
 
 /** Set the resize incremenet of the window */

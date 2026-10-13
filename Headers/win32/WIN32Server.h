@@ -237,6 +237,7 @@ typedef struct _win_intern {
 #if (BUILD_GRAPHICS==GRAPHICS_cairo)
   void *surface;
 #endif
+  BOOL hasShadowFrame;             // a borderless window given a shadow
 } WIN_INTERN;
 
 /* Create a drawable of the given size for a device context.
