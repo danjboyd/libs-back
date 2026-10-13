@@ -92,6 +92,7 @@ typedef struct w32serverFlags
 {
   BOOL handlesWindowDecorations;
   BOOL usesNativeTaskbar;
+  BOOL perMonitorDPIAware;
 
   serverFlags flags;
   HINSTANCE hinstance;
@@ -108,6 +109,15 @@ typedef struct w32serverFlags
 
 - (BOOL) usesNativeTaskbar;
 - (void) setUsesNativeTaskbar: (BOOL) b;
+
+/** Whether the process is per-monitor DPI aware (the GSBackDPIAware
+ * default, or a theme's).  Windows then stops stretching the app's
+ * windows on a scaled display; -resolutionForScreen: gives each monitor's
+ * own scale, which the gui draws windows at (-[NSScreen
+ * userSpaceScaleFactor]), and a window moved to a monitor with another
+ * scale takes the size Windows suggests (WM_DPICHANGED).
+ */
+- (BOOL) isPerMonitorDPIAware;
 
 + (void) initializeBackend;
 

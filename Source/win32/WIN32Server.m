@@ -196,6 +196,87 @@ BOOL CALLBACK LoadDisplayMonitorInfo(HMONITOR hMonitor,
   usesNativeTaskbar = b;
 }
 
+- (BOOL) isPerMonitorDPIAware
+{
+  return perMonitorDPIAware;
+}
+
+/* Makes the process per-monitor DPI aware: version 2 where Windows has it
+   (Windows 10 1703), which also scales the frame and caption, else
+   version 1 (Windows 8.1).  Earlier, or once the process has an
+   awareness (from its manifest), it stays as it is.  The monitors are
+   listed again, in physical pixels now. */
+- (void) _becomePerMonitorDPIAware
+{
+  typedef WINBOOL (WINAPI *SetContextFunc)(HANDLE);
+  typedef HRESULT (WINAPI *SetAwarenessFunc)(int);
+  HMODULE user32 = GetModuleHandleA("user32.dll");
+  SetContextFunc setContext = NULL;
+
+  if (user32 != NULL)
+    {
+      setContext = (SetContextFunc)(void *)GetProcAddress(user32,
+        "SetProcessDpiAwarenessContext");
+    }
+  /* DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 */
+  if (setContext != NULL && setContext((HANDLE)(LONG_PTR)-4))
+    {
+      perMonitorDPIAware = YES;
+    }
+  else
+    {
+      HMODULE shcore = LoadLibraryA("shcore.dll");
+      SetAwarenessFunc setAwareness = NULL;
+
+      if (shcore != NULL)
+        {
+          setAwareness = (SetAwarenessFunc)(void *)GetProcAddress(shcore,
+            "SetProcessDpiAwareness");
+        }
+      /* PROCESS_PER_MONITOR_DPI_AWARE */
+      if (setAwareness != NULL && setAwareness(2) == S_OK)
+        {
+          perMonitorDPIAware = YES;
+        }
+    }
+  NSDebugLLog(@"WTrace", @"per-monitor DPI aware: %d", perMonitorDPIAware);
+  if (perMonitorDPIAware)
+    {
+      [monitorInfo removeAllObjects];
+      EnumDisplayMonitors(NULL, NULL, (MONITORENUMPROC)LoadDisplayMonitorInfo,
+                          (LPARAM)monitorInfo);
+    }
+}
+
+/* A monitor's DPI, when the process is per-monitor DPI aware, or 0. */
+static UINT
+monitorDPI(HMONITOR monitor)
+{
+  typedef HRESULT (WINAPI *GetDpiFunc)(HMONITOR, int, UINT *, UINT *);
+  static GetDpiFunc getDpi = NULL;
+  static BOOL looked = NO;
+  UINT x = 0;
+  UINT y = 0;
+
+  if (!looked)
+    {
+      HMODULE shcore = LoadLibraryA("shcore.dll");
+
+      looked = YES;
+      if (shcore != NULL)
+        {
+          getDpi = (GetDpiFunc)(void *)GetProcAddress(shcore,
+            "GetDpiForMonitor");
+        }
+    }
+  /* MDT_EFFECTIVE_DPI */
+  if (getDpi == NULL || monitor == NULL || getDpi(monitor, 0, &x, &y) != S_OK)
+    {
+      return 0;
+    }
+  return y;
+}
+
 - (void) callback: (id)sender
 {
   MSG msg;
@@ -400,6 +481,10 @@ BOOL CALLBACK LoadDisplayMonitorInfo(HMONITOR hMonitor,
 	    [self setUsesNativeTaskbar:
 	      [defs boolForKey: @"GSBackUsesNativeTaskbar"]];
 	  }
+	if ([defs boolForKey: @"GSBackDPIAware"])
+	  {
+	    [self _becomePerMonitorDPIAware];
+	  }
       }
     }
   return self;
@@ -479,6 +564,17 @@ LRESULT CALLBACK windowEnumCallback(HWND hwnd, LPARAM lParam)
   int windowsXRes, windowsYRes;
   NSSize gnustepRes;
   HDC hdc;
+
+  if (perMonitorDPIAware)
+    {
+      /* Each monitor's own scale (72 is 100%, as 96 DPI is on Windows) */
+      UINT dpi = monitorDPI([self monitorHandleForScreen: screen]);
+
+      if (dpi > 0)
+        {
+          return NSMakeSize(0.75 * dpi, 0.75 * dpi);
+        }
+    }
 
   hdc = GetDC(NULL);
   windowsXRes = GetDeviceCaps(hdc, LOGPIXELSX);
@@ -1234,6 +1330,22 @@ LRESULT CALLBACK windowEnumCallback(HWND hwnd, LPARAM lParam)
       case WM_EXITSIZEMOVE: 
         return [self decodeWM_EXITSIZEMOVEParams: wParam : lParam : hwnd];
         break; 
+#ifndef WM_DPICHANGED
+#define WM_DPICHANGED 0x02E0
+#endif
+      case WM_DPICHANGED:
+        {
+          /* Moved to a monitor with another scale: take the size Windows
+             suggests, the same size in points there.  The gui's move and
+             resize events then draw it at that monitor's scale. */
+          RECT *r = (RECT *)lParam;
+
+          SetWindowPos(hwnd, NULL, r->left, r->top,
+                       r->right - r->left, r->bottom - r->top,
+                       SWP_NOZORDER | SWP_NOACTIVATE);
+          flags._eventHandled = YES;
+        }
+        break;
       case WM_ACTIVATE: 
         if ((int)lParam !=0)
           [self decodeWM_ACTIVEParams: wParam : lParam : hwnd]; 
