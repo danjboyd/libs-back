@@ -2163,22 +2163,31 @@ LRESULT CALLBACK windowEnumCallback(HWND hwnd, LPARAM lParam)
 - (void) setmaxsize: (NSSize)size : (int) winNum
 {
   WIN_INTERN *win = (WIN_INTERN *)GetWindowLongPtr((HWND)winNum, GWLP_USERDATA);
+  LONG_PTR style = GetWindowLongPtr((HWND)winNum, GWL_STYLE);
+  LONG_PTR wanted = style;
   POINT p;
 
   p.x = size.width;
   p.y = size.height;
   win->minmax.ptMaxTrackSize = p;
 
-  // Disable the maximize box if a maximum size is set
+  /* A maximum size takes the maximize box away; a resizable titled window
+     without one has it.  Only those: a window that can't be resized has
+     no maximize box (-windowStyleForGSStyle:), whatever its maximum size. */
   if (size.width < 10000 || size.height < 10000)
     {
-      SetWindowLongPtr((HWND)winNum, GWL_STYLE, 
-          GetWindowLongPtr((HWND)winNum, GWL_STYLE) ^ WS_MAXIMIZEBOX);
+      wanted &= ~WS_MAXIMIZEBOX;
     }
-  else
+  else if ((style & WS_THICKFRAME) && (style & WS_CAPTION) == WS_CAPTION)
     {
-      SetWindowLongPtr((HWND)winNum, GWL_STYLE, 
-          GetWindowLongPtr((HWND)winNum, GWL_STYLE) | WS_MAXIMIZEBOX);
+      wanted |= WS_MAXIMIZEBOX;
+    }
+  if (wanted != style)
+    {
+      SetWindowLongPtr((HWND)winNum, GWL_STYLE, wanted);
+      SetWindowPos((HWND)winNum, NULL, 0, 0, 0, 0,
+                   SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE
+                   | SWP_FRAMECHANGED);
     }
 }
 
