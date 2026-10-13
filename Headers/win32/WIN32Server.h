@@ -140,6 +140,9 @@ typedef struct w32serverFlags
  */
 - (BOOL) isPerMonitorDPIAware;
 
+/** The Windows monitor showing screen, or NULL. */
+- (HMONITOR) monitorHandleForScreen: (int)screen;
+
 /** Declares the parts of a window's caption row the gui drew, for a
  * window whose client draws its caption.  Each rect, in the window's base
  * coordinates, has a kind from GSCaptionRegionKind: the parts that drag
