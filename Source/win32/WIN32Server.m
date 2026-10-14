@@ -109,7 +109,10 @@ static unsigned int mask_for_keystate(BYTE *keyState);
       CGFloat w = lprcMonitor->right - lprcMonitor->left;
       CGFloat h = lprcMonitor->bottom - lprcMonitor->top;
       CGFloat x = lprcMonitor->left;
-      CGFloat y = h - lprcMonitor->bottom;
+      /* Flipped against the primary monitor's height, as window
+         coordinates are (MSScreenRectToGS()): a monitor shorter than the
+         primary, or not level with its top, sits where its windows do. */
+      CGFloat y = GetSystemMetrics(SM_CYSCREEN) - lprcMonitor->bottom;
 
       _hMonitor = hMonitor;
       _frame = NSMakeRect(x, y, w, h);
