@@ -29,6 +29,7 @@
 #include "GNUstepBase/Unicode.h"
 #include <AppKit/NSAffineTransform.h>
 #include <AppKit/NSBezierPath.h>
+#include <GNUstepGUI/GSDisplayServer.h>
 #include "cairo/CairoFontInfo.h"
 #include "cairo/CairoFontEnumerator.h"
 
@@ -41,6 +42,29 @@
 #include FT_TYPE1_TABLES_H
 #include <fontconfig/fontconfig.h>
 #include <fontconfig/fcfreetype.h>
+
+/* A display server that sets each window's scale from its monitor's DPI
+   (the win32 server with GSBackDPIAware). */
+@interface NSObject (CairoFontInfoDPIAware)
+- (BOOL) isPerMonitorDPIAware;
+@end
+
+/* YES when windows may be drawn at a scale other than 1.0: GSScaleFactor
+   set to another value, or a server scaling each window by its monitor's
+   DPI. */
+static BOOL
+windows_are_scaled(float scale)
+{
+  GSDisplayServer *server;
+
+  if (scale != 0.0f && scale != 1.0f)
+    {
+      return YES;
+    }
+  server = GSCurrentServer();
+  return [server respondsToSelector: @selector(isPerMonitorDPIAware)]
+    && [(NSObject *)server isPerMonitorDPIAware];
+}
 
 void set_font_options(cairo_font_options_t *options)
 {
@@ -62,8 +86,9 @@ void set_font_options(cairo_font_options_t *options)
           /*
            * Default hinting to off if scale is set to something other than 1.0. As
            * hinting + scaling breaks assumptions about glyph advancement made in gui.
+           * A per-monitor DPI aware server scales windows without GSScaleFactor.
            */
-          if (scale == 0.0f || scale == 1.0f)
+          if (!windows_are_scaled(scale))
             {
               hinting = 33;
             }
