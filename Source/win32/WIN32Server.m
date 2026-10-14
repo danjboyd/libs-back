@@ -1502,6 +1502,28 @@ LRESULT CALLBACK windowEnumCallback(HWND hwnd, LPARAM lParam)
                            r->right - r->left, r->bottom - r->top,
                            SWP_NOZORDER | SWP_NOACTIVATE);
             }
+          else
+            {
+              /* The gui laid the window out for the screen it was on as
+                 it placed it; once it's placed, a resize to the size it
+                 has lays it out at this monitor's scale. */
+              RECT wr;
+              NSRect rect;
+              NSEvent *ev;
+
+              GetWindowRect(hwnd, &wr);
+              rect = MSScreenRectToGS(wr);
+              ev = [NSEvent otherEventWithType: NSAppKitDefined
+                                      location: rect.origin
+                                 modifierFlags: 0
+                                     timestamp: 0
+                                  windowNumber: (int)hwnd
+                                       context: GSCurrentContext()
+                                       subtype: GSAppKitWindowResized
+                                         data1: rect.size.width
+                                         data2: rect.size.height];
+              [NSApp postEvent: ev atStart: NO];
+            }
           flags._eventHandled = YES;
         }
         break;
