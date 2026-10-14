@@ -143,6 +143,11 @@ static unsigned int mask_for_keystate(BYTE *keyState);
 
 static BOOL _enableCallbacks = YES;
 
+/* Set while the gui places or moves a window itself (-placewindow::,
+   -movewindow::): a window it moves to a monitor with another scale it
+   has already sized for that monitor, so WM_DPICHANGED leaves it so. */
+static int guiPlacesWindow = 0;
+
 static NSEvent *process_key_event(WIN32Server *svr, 
                                   HWND hwnd, WPARAM wParam, 
                                   LPARAM lParam, NSEventType eventType);
@@ -1337,12 +1342,18 @@ LRESULT CALLBACK windowEnumCallback(HWND hwnd, LPARAM lParam)
         {
           /* Moved to a monitor with another scale: take the size Windows
              suggests, the same size in points there.  The gui's move and
-             resize events then draw it at that monitor's scale. */
+             resize events then draw it at that monitor's scale.  Not when
+             the gui placed it there: it sized the window for that monitor
+             already (a menu panel it reuses), and the suggested size
+             would shrink or grow it again by the ratio of the scales. */
           RECT *r = (RECT *)lParam;
 
-          SetWindowPos(hwnd, NULL, r->left, r->top,
-                       r->right - r->left, r->bottom - r->top,
-                       SWP_NOZORDER | SWP_NOACTIVATE);
+          if (guiPlacesWindow == 0)
+            {
+              SetWindowPos(hwnd, NULL, r->left, r->top,
+                           r->right - r->left, r->bottom - r->top,
+                           SWP_NOZORDER | SWP_NOACTIVATE);
+            }
           flags._eventHandled = YES;
         }
         break;
@@ -2144,8 +2155,10 @@ LRESULT CALLBACK windowEnumCallback(HWND hwnd, LPARAM lParam)
 	      winNum);
   p = GSWindowOriginToMS((HWND)winNum, loc);
 
+  guiPlacesWindow++;
   SetWindowPos((HWND)winNum, NULL, p.x, p.y, 0, 0, 
                SWP_NOZORDER | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOSENDCHANGING);
+  guiPlacesWindow--;
 }
 
 - (void) placewindow: (NSRect)frame : (int) winNum
@@ -2158,9 +2171,11 @@ LRESULT CALLBACK windowEnumCallback(HWND hwnd, LPARAM lParam)
   r = GSScreenRectToMS(frame);
   GetWindowRect((HWND)winNum, &r2);
   
+  guiPlacesWindow++;
   SetWindowPos((HWND)winNum, NULL, 
                r.left, r.top, r.right - r.left, r.bottom - r.top, 
                SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOSENDCHANGING);
+  guiPlacesWindow--;
   
 #if (BUILD_GRAPHICS==GRAPHICS_winlib)
   WIN_INTERN *win = (WIN_INTERN *)GetWindowLongPtr((HWND)winNum, GWLP_USERDATA);
