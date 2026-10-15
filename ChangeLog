@@ -15,6 +15,15 @@
 	or close the window, even when asked with _NET_WM_MOVERESIZE or
 	_NET_WM_STATE.  Borderless windows still allow no functions.
 	* Tests/x11/motifhints.m: New test.
+2026-10-15 Daniel Boyd <danieljboyd@icloud.com>
+
+	* Source/x11/XGServerWindow.m (-_setSupportedWMProtocols:): When the
+	gui draws the decorations (GSBackHandlesWindowDecorations or
+	GSX11HandlesWindowDecorations NO), take the closable style from the
+	NSWindow, as the X window is created without the style.  Closable
+	windows now list WM_DELETE_WINDOW; without it a window manager asked
+	to close one (Alt+F4) kills the whole client.
+	* Tests/x11/wmdeletewindow.m: New test.
 
 2026-07-22 Richard Frith-Macdonald <rfm@gnu.org>
 
