@@ -1490,13 +1490,22 @@ _wmTestErrorHandler(Display *display, XErrorEvent *event)
 - (void) _setSupportedWMProtocols: (gswindow_device_t *) window
 {
   NSWindow *nswin = GSWindowWithNumber(window->number);
+  unsigned int closeStyle = window->win_attrs.window_style;
 
   window->numProtocols = 0;
   if (!nswin || [nswin canBecomeKeyWindow])
     {
       window->protocols[window->numProtocols++] = generic.WM_TAKE_FOCUS_ATOM;
     }
-  if ((window->win_attrs.window_style & NSClosableWindowMask) != 0)
+  /* When the gui draws the decorations, the X window is created without
+     the style (see -window::::), but the window may still be closable.
+     Without WM_DELETE_WINDOW a window manager asked to close it (Alt+F4,
+     its window menu) kills the whole client instead.  */
+  if (!handlesWindowDecorations && nswin != nil)
+    {
+      closeStyle = [nswin styleMask];
+    }
+  if ((closeStyle & NSClosableWindowMask) != 0)
     window->protocols[window->numProtocols++] = generic.WM_DELETE_WINDOW_ATOM;
   // Add ping protocol for EWMH
   if ((generic.wm & XGWM_EWMH) != 0)
