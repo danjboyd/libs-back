@@ -3754,6 +3754,74 @@ swapColors(unsigned char *image_data, NSBitmapImageRep *rep)
   return 0;
 }
 
+/*
+ * Without a window manager that keeps _NET_CLIENT_LIST_STACKING, order the
+ * visible windows the superclass lists as the X server stacks them: the
+ * children of the root window, bottom to top, are our windows or the frames
+ * a window manager reparented them into.  A window the tree does not show
+ * keeps its place after the others.
+ */
+- (NSArray *) _windowlistInStackingOrder
+{
+  NSArray *visible = [super windowlist];
+  NSMutableArray *ret;
+  Window root;
+  Window parent;
+  Window *children;
+  unsigned int count;
+
+  if ([visible count] < 2)
+    {
+      return visible;
+    }
+  if (!XQueryTree(dpy, [self _rootWindow]->ident, &root, &parent,
+    &children, &count))
+    {
+      return visible;
+    }
+
+  ret = [NSMutableArray arrayWithCapacity: [visible count]];
+  while (count-- > 0)
+    {
+      gswindow_device_t *window;
+
+      window = [[self class] _windowForXWindow: children[count]];
+      if (window == 0)
+        {
+          window = [[self class] _windowForXParent: children[count]];
+        }
+      if (window != 0)
+        {
+          NSNumber *number = [NSNumber numberWithInt: window->number];
+
+          if ([visible containsObject: number]
+            && ![ret containsObject: number])
+            {
+              [ret addObject: number];
+            }
+        }
+    }
+  if (children != NULL)
+    {
+      XFree(children);
+    }
+
+  if ([ret count] < [visible count])
+    {
+      NSEnumerator *enumerator = [visible objectEnumerator];
+      NSNumber *number;
+
+      while ((number = [enumerator nextObject]) != nil)
+        {
+          if (![ret containsObject: number])
+            {
+              [ret addObject: number];
+            }
+        }
+    }
+  return ret;
+}
+
 - (NSArray *) windowlist
 {
   gswindow_device_t *rootWindow;
@@ -3769,7 +3837,7 @@ swapColors(unsigned char *image_data, NSBitmapImageRep *rep)
                                                XA_WINDOW, 32, -1, &c);
   if (windowOrder == NULL || !c)
     {
-      return [super windowlist];
+      return [self _windowlistInStackingOrder];
     }
 
   ret = [NSMutableArray array];
