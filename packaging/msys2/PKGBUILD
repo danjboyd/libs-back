@@ -8,7 +8,7 @@
 _realname=gnustep-back
 pkgbase=mingw-w64-${_realname}
 pkgname=("${MINGW_PACKAGE_PREFIX}-${_realname}")
-pkgver=0.32.0.4
+pkgver=0.32.0.5
 pkgrel=1
 pkgdesc="GNUstep GUI Backend, with danjboyd/libs-back's carried changes (mingw-w64)"
 arch=('any')

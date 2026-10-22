@@ -15,7 +15,7 @@ plugins-themes-Adwaita's `Docs/UPSTREAM_POLICY.md`).
 | win32: the gui draws a titled window's caption (`GSBackClientDrawsCaptions`, caption regions, Snap Layouts); the WinUI theme's title bar (plugins-themes-winuitheme#83) | `win32-client-caption` | not sent |
 | win32: `-setmaxsize::` leaves the maximize box as the window's style means it, no longer toggling it or giving one to windows that can't be resized (plugins-themes-winuitheme#67) | `win32-setmaxsize` | not sent |
 | win32: `-setShadow::` gives a borderless window DWM's shadow (and Windows 11's rounding): menus, tool tips and flyouts (plugins-themes-winuitheme#39) | `win32-popup-shadows` | not sent |
-| win32: per-monitor DPI awareness with the `GSBackDPIAware` default: sharp at every display scale, each monitor's resolution, `WM_DPICHANGED` (keeping a window the gui placed itself), hinted glyph metrics off as with `GSScaleFactor` (plugins-themes-winuitheme#105) | `win32-per-monitor-dpi` | not sent |
+| win32: per-monitor DPI awareness with the `GSBackDPIAware` default: sharp at every display scale, each monitor's resolution, `WM_DPICHANGED` (keeping a window the gui placed itself), hinted glyph metrics off as with `GSScaleFactor`, and for a system DPI aware app whose screen's resolution isn't 72 (plugins-themes-winuitheme#105, ScreenshotTool #306) | `win32-per-monitor-dpi` | not sent |
 | win32: each monitor's frame flipped against the primary's height, as window coordinates are, so windows on a monitor shorter than the primary (or not level with it) find their screen and its scale (plugins-themes-winuitheme#105) | `win32-monitor-frames` | not sent |
 
 ## The package
