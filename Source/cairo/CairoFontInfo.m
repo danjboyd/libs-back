@@ -50,20 +50,32 @@
 @end
 
 /* YES when windows may be drawn at a scale other than 1.0: GSScaleFactor
-   set to another value, or a server scaling each window by its monitor's
-   DPI. */
+   set to another value, a server scaling each window by its monitor's
+   DPI, or a screen whose resolution isn't 72 (the gui scales windows by
+   it without GSScaleFactor: a system DPI aware process on Windows at
+   125% or 150%). */
 static BOOL
 windows_are_scaled(float scale)
 {
   GSDisplayServer *server;
+  NSSize resolution;
 
   if (scale != 0.0f && scale != 1.0f)
     {
       return YES;
     }
   server = GSCurrentServer();
-  return [server respondsToSelector: @selector(isPerMonitorDPIAware)]
-    && [(NSObject *)server isPerMonitorDPIAware];
+  if (server == nil)
+    {
+      return NO;
+    }
+  if ([server respondsToSelector: @selector(isPerMonitorDPIAware)]
+    && [(NSObject *)server isPerMonitorDPIAware])
+    {
+      return YES;
+    }
+  resolution = [server resolutionForScreen: 0];
+  return resolution.width > 0.0 && fabs(resolution.width - 72.0) > 0.5;
 }
 
 void set_font_options(cairo_font_options_t *options)
