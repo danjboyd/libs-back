@@ -36,12 +36,65 @@
 #include "x11/XGServerWindow.h"
 #include "x11/XGOpenGL.h"
 #include <X11/Xlib.h>
+#include <string.h>
 
 //FIXME
 //should I store the display ?
 #define MAKE_DISPLAY(dpy) Display *dpy;\
   dpy = [(XGServer *)GSCurrentServer() xDisplay];\
   NSAssert(dpy != NULL, NSInternalInconsistencyException)
+
+typedef void (*GSGLXSwapIntervalEXTProc)(Display *, GLXDrawable, int);
+typedef int (*GSGLXSwapIntervalMESAProc)(unsigned int);
+typedef int (*GSGLXSwapIntervalSGIProc)(int);
+
+/* Sets the swap interval through the first swap control extension the GLX
+ * implementation offers: GLX_EXT_swap_control for the drawable, or
+ * GLX_MESA_swap_control or GLX_SGI_swap_control for the current context.
+ * Answers NO when none of them is offered or the call fails.
+ */
+static BOOL
+setSwapInterval(Display *dpy, GLXDrawable drawable, int interval)
+{
+  const char *extensions = glXQueryExtensionsString(dpy, DefaultScreen(dpy));
+
+  if (extensions == NULL)
+    {
+      return NO;
+    }
+  if (drawable != None && strstr(extensions, "GLX_EXT_swap_control") != NULL)
+    {
+      GSGLXSwapIntervalEXTProc swapIntervalEXT = (GSGLXSwapIntervalEXTProc)
+        glXGetProcAddress((const GLubyte *)"glXSwapIntervalEXT");
+
+      if (swapIntervalEXT != NULL)
+        {
+          swapIntervalEXT(dpy, drawable, interval);
+          return YES;
+        }
+    }
+  if (strstr(extensions, "GLX_MESA_swap_control") != NULL)
+    {
+      GSGLXSwapIntervalMESAProc swapIntervalMESA = (GSGLXSwapIntervalMESAProc)
+        glXGetProcAddress((const GLubyte *)"glXSwapIntervalMESA");
+
+      if (swapIntervalMESA != NULL && interval >= 0)
+        {
+          return swapIntervalMESA((unsigned int)interval) == 0;
+        }
+    }
+  if (interval > 0 && strstr(extensions, "GLX_SGI_swap_control") != NULL)
+    {
+      GSGLXSwapIntervalSGIProc swapIntervalSGI = (GSGLXSwapIntervalSGIProc)
+        glXGetProcAddress((const GLubyte *)"glXSwapIntervalSGI");
+
+      if (swapIntervalSGI != NULL)
+        {
+          return swapIntervalSGI(interval) == 0;
+        }
+    }
+  return NO;
+}
 
 @interface XGXSubWindow : NSObject
 {
@@ -359,9 +412,17 @@ static XGGLContext *currentGLContext;
   glXSwapBuffers(dpy, glx_drawable);
 }
 
+/* Answers the swap interval last set, 0 until one is set; the other
+ * parameters are not implemented.
+ */
 - (void)getValues:(long *)vals 
      forParameter:(NSOpenGLContextParameter)param
 {
+  if (param == NSOpenGLCPSwapInterval)
+    {
+      *vals = swap_interval;
+      return;
+    }
   //  TODO
   [self notImplemented: _cmd];
 }
@@ -475,9 +536,24 @@ static XGGLContext *currentGLContext;
   [self notImplemented: _cmd];
 }
 
+/* Sets the swap interval, through a GLX swap control extension when the
+ * GLX implementation offers one; the other parameters are not implemented.
+ */
 - (void)setValues:(const long *)vals 
      forParameter:(NSOpenGLContextParameter)param
 {
+  if (param == NSOpenGLCPSwapInterval)
+    {
+      MAKE_DISPLAY(dpy);
+
+      swap_interval = (int)*vals;
+      if (!setSwapInterval(dpy, glx_drawable, swap_interval))
+        {
+          NSDebugMLLog(@"GLX", @"swap interval %d not set: no GLX swap control",
+                       swap_interval);
+        }
+      return;
+    }
   [self notImplemented: _cmd];
 }
 
@@ -503,6 +579,12 @@ static XGGLContext *currentGLContext;
                                         visualinfo: [pixelFormat visualinfo]]);
 
   glx_drawable = [pixelFormat drawableForWindow: xSubWindow->xwindowid];
+  if (swap_interval != 0)
+    {
+      MAKE_DISPLAY(dpy);
+
+      setSwapInterval(dpy, glx_drawable, swap_interval);
+    }
   saved_ignores_backing = [view _ignoresBacking];
   [view _setIgnoresBacking: YES];
 

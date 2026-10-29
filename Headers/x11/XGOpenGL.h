@@ -48,6 +48,7 @@
   XGXSubWindow     *xSubWindow;
   XGGLPixelFormat  *pixelFormat;
   BOOL              saved_ignores_backing;
+  int               swap_interval;
 }
 
 - (GLXContext)glxcontext;
