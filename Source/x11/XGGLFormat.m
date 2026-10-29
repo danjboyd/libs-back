@@ -80,29 +80,62 @@
   return cachedVersion;
 }
 
-// Works for some attributes only
-- (void) getValues: (GLint *)vals 
-      forAttribute: (NSOpenGLPixelFormatAttribute)attrib 
-  forVirtualScreen: (GLint)screen
+- (GLint) glxAttribute: (int)attrib
 {
+  GLint value = 0;
   int error;
-
-  NSAssert((fbconfig != NULL || visualinfo != NULL) && configurationCount > 0,
-            NSInternalInconsistencyException);
 
   if (glxminorversion >= 3)
     {
-      error = glXGetFBConfigAttrib(display, fbconfig[pickedFBConfig], attrib, vals);
-      if ( error != 0 )
-          NSDebugMLLog( @"GLX", @"Can not get FB attribute for pixel format %@ - Error %u",
-                                self, error );
+      error = glXGetFBConfigAttrib(display, fbconfig[pickedFBConfig], attrib, &value);
     }
   else
     {
-      error = glXGetConfig(display, visualinfo, attrib, vals);
-      if ( error != 0 )
-          NSDebugMLLog( @"GLX", @"Can not get FB attribute for pixel format %@ - Error %u",
-                                self, error );
+      error = glXGetConfig(display, visualinfo, attrib, &value);
+    }
+  if ( error != 0 )
+      NSDebugMLLog( @"GLX", @"Can not get FB attribute %d for pixel format %@ - Error %u",
+                            attrib, self, error );
+  return value;
+}
+
+/* Answers the value of an attribute of the chosen configuration.  The
+ * attributes -assembleGLXAttributes: translates are translated back the
+ * same way; NSOpenGLPFADoubleBuffer, NSOpenGLPFAStereo,
+ * NSOpenGLPFAAuxBuffers, NSOpenGLPFAAlphaSize, NSOpenGLPFADepthSize and
+ * NSOpenGLPFAStencilSize have the values of their GLX attributes.
+ */
+- (void) getValues: (GLint *)vals
+      forAttribute: (NSOpenGLPixelFormatAttribute)attrib
+  forVirtualScreen: (GLint)screen
+{
+  NSAssert((fbconfig != NULL || visualinfo != NULL) && configurationCount > 0,
+            NSInternalInconsistencyException);
+
+  switch (attrib)
+    {
+      case NSOpenGLPFAColorSize:
+        *vals = [self glxAttribute: GLX_BUFFER_SIZE];
+        break;
+      case NSOpenGLPFAAccumSize:
+        *vals = [self glxAttribute: GLX_ACCUM_RED_SIZE]
+          + [self glxAttribute: GLX_ACCUM_GREEN_SIZE]
+          + [self glxAttribute: GLX_ACCUM_BLUE_SIZE]
+          + [self glxAttribute: GLX_ACCUM_ALPHA_SIZE];
+        break;
+#ifdef GLX_SAMPLE_BUFFERS
+      case NSOpenGLPFASampleBuffers:
+        *vals = [self glxAttribute: GLX_SAMPLE_BUFFERS];
+        break;
+#endif
+#ifdef GLX_SAMPLES
+      case NSOpenGLPFASamples:
+        *vals = [self glxAttribute: GLX_SAMPLES];
+        break;
+#endif
+      default:
+        *vals = [self glxAttribute: attrib];
+        break;
     }
 }
 
