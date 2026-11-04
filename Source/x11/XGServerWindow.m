@@ -4575,6 +4575,18 @@ xgps_cursor_image(Display *xdpy, Drawable draw, const unsigned char *data,
       return;
     }
 
+  /* The hot spot is in points, and the cursor is built in the pixels of the
+     representation, which can have more of them. */
+  {
+    NSSize size = [image size];
+
+    if (size.width > 0 && size.height > 0)
+      {
+	hotp.x = hotp.x * [rep pixelsWide] / size.width;
+	hotp.y = hotp.y * [rep pixelsHigh] / size.height;
+      }
+  }
+
   if (hotp.x >= [rep pixelsWide])
     hotp.x = [rep pixelsWide]-1;
 
