@@ -35,5 +35,5 @@ ADDITIONAL_TOOL_LIBS += $(shell pkg-config --libs x11) \
 
 # A test that asks the display server what it reports needs the gui library,
 # which is where GSDisplayServer lives.
-ADDITIONAL_TOOL_LIBS += -lgnustep-gui
+ADDITIONAL_TOOL_LIBS += -lgnustep-gui -ldl
 endif

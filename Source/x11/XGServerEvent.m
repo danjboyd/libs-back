@@ -2700,6 +2700,37 @@ process_modifier_flags(unsigned int state)
   return [self mouseLocationOnScreen: defScreen window: NULL];
 }
 
+- (NSUInteger) pressedMouseButtons
+{
+  Window rootWin;
+  Window childWin;
+  int rootX;
+  int rootY;
+  int winX;
+  int winY;
+  unsigned mask;
+  NSUInteger buttons = 0;
+
+  if (XQueryPointer (dpy, [self xDisplayRootWindow], &rootWin, &childWin,
+                     &rootX, &rootY, &winX, &winY, &mask) == False)
+    {
+      return 0;
+    }
+  if (mask & generic.lMouseMask)
+    {
+      buttons |= 1 << 0;
+    }
+  if (mask & generic.rMouseMask)
+    {
+      buttons |= 1 << 1;
+    }
+  if (mask & generic.mMouseMask)
+    {
+      buttons |= 1 << 2;
+    }
+  return buttons;
+}
+
 - (NSPoint) mouseLocationOnScreen: (int)screen window: (int *)win
 {
   Window rootWin;
