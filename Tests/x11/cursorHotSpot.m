@@ -136,7 +136,7 @@ main(int argc, char **argv)
         NSImage *both = imageWithPixels(16, 16, NSMakeSize(16, 16));
         NSImage *big = imageWithPixels(32, 32, NSMakeSize(16, 16));
         CGFloat factor = [[NSScreen mainScreen] userSpaceScaleFactor];
-        int want = (factor > 1.5) ? 32 : 16;
+        int want = (factor > 1.0) ? 32 : 16;
 
         [both addRepresentation:
           [[big representations] objectAtIndex: 0]];
