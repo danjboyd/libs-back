@@ -43,6 +43,7 @@
 #include <AppKit/NSWindow.h>
 #include <AppKit/NSImage.h>
 #include <AppKit/NSBitmapImageRep.h>
+#include <AppKit/NSScreen.h>
 
 #ifdef HAVE_UNISTD_H
 #include <unistd.h>
@@ -110,7 +111,11 @@ static int	last_win_num = 0;
                                         bitsPerPixel: (NSInteger)pixelBits;
 @end
 
-static NSBitmapImageRep *getStandardBitmap(NSImage *image)
+/* The representation of image that suits the device described by
+   deviceDescription (nil for none in particular), in a format the backend can
+   use. */
+static NSBitmapImageRep *getStandardBitmapForDevice(NSImage *image,
+                                                    NSDictionary *deviceDescription)
 {
   NSBitmapImageRep *rep;
 
@@ -134,7 +139,7 @@ static NSBitmapImageRep *getStandardBitmap(NSImage *image)
 }
 */
 
-  rep = (NSBitmapImageRep *)[image bestRepresentationForDevice: nil];
+  rep = (NSBitmapImageRep *)[image bestRepresentationForDevice: deviceDescription];
   if (!rep || ![rep respondsToSelector: @selector(samplesPerPixel)])
     {
       return nil;
@@ -153,6 +158,11 @@ static NSBitmapImageRep *getStandardBitmap(NSImage *image)
     }
 }
 
+
+static NSBitmapImageRep *getStandardBitmap(NSImage *image)
+{
+  return getStandardBitmapForDevice(image, nil);
+}
 
 void __objc_xgcontextwindow_linking (void)
 {
@@ -4566,7 +4576,10 @@ xgps_cursor_image(Display *xdpy, Drawable draw, const unsigned char *data,
   int w, h;
   int colors;
 
-  rep = getStandardBitmap(image);
+  /* With no device, an image with 1x and 2x representations gives the
+     largest, so ask for the one that suits the screen. */
+  rep = getStandardBitmapForDevice(image,
+                                   [[NSScreen mainScreen] deviceDescription]);
   if (rep == nil)
     {
       /* FIXME: We might create a blank cursor here? */
