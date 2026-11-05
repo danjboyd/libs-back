@@ -3330,7 +3330,9 @@ swapColors(unsigned char *image_data, NSBitmapImageRep *rep)
       int revert, status;
       status = XGetInputFocus(dpy, &keywin, &revert);
       other = NULL;
-      if (status == True)
+      /* With no window focused, the focus is None or PointerRoot, which are
+         no windows to stack against. */
+      if (status == True && keywin != None && keywin != PointerRoot)
 	{
 	  /* Alloc a temporary window structure */
 	  other = GSAutoreleasedBuffer(sizeof(gswindow_device_t));
