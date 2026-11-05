@@ -130,6 +130,22 @@ main(int argc, char **argv)
       PASS(xhot >= 0 && xhot < 32 && yhot >= 0 && yhot < 32,
         "a hot spot at the edge stays inside");
 
+      /* An image with 1x and 2x representations: the cursor is the one that
+         suits the screen, not the largest. */
+      {
+        NSImage *both = imageWithPixels(16, 16, NSMakeSize(16, 16));
+        NSImage *big = imageWithPixels(32, 32, NSMakeSize(16, 16));
+        CGFloat factor = [[NSScreen mainScreen] userSpaceScaleFactor];
+        int want = (factor > 1.5) ? 32 : 16;
+
+        [both addRepresentation:
+          [[big representations] objectAtIndex: 0]];
+        serverCursor(dpy, both, NSMakePoint(4, 12), &cw, &ch, &xhot, &yhot);
+        PASS(cw == want && ch == want,
+          "of 1x and 2x representations, the cursor uses the screen's");
+        PASS(xhot == x1 * want / 16, "and its hot spot scales with it");
+      }
+
       [w orderOut: nil];
       XCloseDisplay(dpy);
     }
