@@ -39,6 +39,7 @@
 #include FT_SFNT_NAMES_H
 #include FT_TRUETYPE_TABLES_H
 #include FT_TYPE1_TABLES_H
+#include FT_ADVANCES_H
 #include <fontconfig/fontconfig.h>
 #include <fontconfig/fcfreetype.h>
 
@@ -203,6 +204,35 @@ void set_font_options(cairo_font_options_t *options)
         xHeight = ascender * 0.6;
       }
   }
+  isBaseFont = YES;
+  if (cairo_scaled_font_get_type(_scaled) == CAIRO_FONT_TYPE_FT)
+    {
+      FT_Face ft = cairo_ft_scaled_font_lock_face(_scaled);
+
+      if (ft != NULL)
+        {
+          numberOfGlyphs = ft->num_glyphs;
+          if (FT_IS_SCALABLE(ft) && ft->units_per_EM > 0)
+            {
+              underlinePosition
+                = ft->underline_position * matrix[3] / ft->units_per_EM;
+              underlineThickness
+                = ft->underline_thickness * matrix[3] / ft->units_per_EM;
+            }
+          cairo_ft_scaled_font_unlock_face(_scaled);
+        }
+    }
+  /* Not every font says where its underline goes.
+   */
+  if (underlineThickness <= 0)
+    {
+      underlineThickness = MAX(1.0, lineHeight / 20.0);
+    }
+  if (underlinePosition >= 0)
+    {
+      underlinePosition = descender / 2.0;
+    }
+
   maximumAdvancement = NSMakeSize(font_extents.max_x_advance, 
                                   font_extents.max_y_advance);
   fontBBox = NSMakeRect(0, descender, 
@@ -259,6 +289,48 @@ void set_font_options(cairo_font_options_t *options)
       cairo_scaled_font_destroy(_scaled);
     }
   [super dealloc];
+}
+
+/* The advance of the narrowest glyph, which needs a look at every glyph in the
+ * font, so it waits until someone asks.
+ */
+- (NSSize) minimumAdvancement
+{
+  if (minimumAdvancement.width <= 0 && _scaled != NULL
+    && cairo_scaled_font_get_type(_scaled) == CAIRO_FONT_TYPE_FT)
+    {
+      FT_Face ft = cairo_ft_scaled_font_lock_face(_scaled);
+
+      if (ft != NULL)
+        {
+          if (FT_IS_SCALABLE(ft) && ft->units_per_EM > 0 && ft->num_glyphs > 0)
+            {
+              FT_Fixed *advances;
+
+              advances = malloc(ft->num_glyphs * sizeof(FT_Fixed));
+              if (advances != NULL
+                && FT_Get_Advances(ft, 0, ft->num_glyphs, FT_LOAD_NO_SCALE,
+                  advances) == 0)
+                {
+                  FT_Fixed least = 0;
+                  FT_Long i;
+
+                  for (i = 0; i < ft->num_glyphs; i++)
+                    {
+                      if (advances[i] > 0 && (least == 0 || advances[i] < least))
+                        {
+                          least = advances[i];
+                        }
+                    }
+                  minimumAdvancement = NSMakeSize(
+                    least * matrix[0] / ft->units_per_EM, 0);
+                }
+              free(advances);
+            }
+          cairo_ft_scaled_font_unlock_face(_scaled);
+        }
+    }
+  return minimumAdvancement;
 }
 
 - (BOOL) glyphIsEncoded: (NSGlyph)glyph
