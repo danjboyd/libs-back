@@ -41,6 +41,13 @@
 	window is registered, so its class wasn't known and it was typed
 	_DIALOG.
 	* Tests/x11/windowtype.m: New test.
+2026-11-05 Daniel Boyd <danieljboyd@icloud.com>
+
+	* Source/x11/XGServerWindow.m (-orderwindow:::): Stack a window
+	ordered in front against the focus window only when one has the
+	focus.  With none, the focus is None or PointerRoot, and stacking
+	against PointerRoot gave BadWindow.
+
 2026-10-06 Daniel Boyd <danieljboyd@icloud.com>
 
 	* Source/x11/XGServerWindow.m (argb_visual, -_compositorRuns,
