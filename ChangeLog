@@ -1,3 +1,11 @@
+2026-11-06 Daniel Boyd <danieljboyd@icloud.com>
+
+	* Source/fontconfig/FCFontEnumerator.m (-defaultSystemFontName):
+	With none of the listed fonts installed, use what fontconfig gives for
+	sans-serif rather than "Helvetica", which nothing may have: on a system
+	with Noto and no DejaVu no font was found and no text was drawn.
+	* Tests/cairo/defaultsystemfont.m: New test.
+
 2026-10-06 Daniel Boyd <danieljboyd@icloud.com>
 
 	Popover shadows: menus get libadwaita's popover shadow round their
