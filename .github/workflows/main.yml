@@ -40,6 +40,11 @@ jobs:
         include:
           - server: x11
             graphics: cairo
+          # The x11 jobs build with XFixes, as a distribution does; this one
+          # without, the case where no window gets a shadow margin.
+          - server: x11
+            graphics: cairo
+            xfixes: without
           - server: x11
             graphics: xlib
           - server: x11
@@ -93,6 +98,11 @@ jobs:
       APT_PACKAGES_headless: >-
         libcairo2-dev
 
+      # extra packages for the x11 server: XFixes, which tells the backend
+      # when a compositing manager starts and stops
+      APT_PACKAGES_x11: >-
+        libxfixes-dev
+
       # extra packages for the wayland server (graphics=cairo supplies the rest)
       APT_PACKAGES_wayland: >-
         libwayland-dev
@@ -109,6 +119,7 @@ jobs:
 
       - name: Install packages
         run: |
+          if [ "${{ matrix.xfixes }}" = without ]; then APT_PACKAGES_x11=; fi
           apt-get -q -y update
           apt-get -q -y install $APT_PACKAGES $APT_PACKAGES_${{ matrix.graphics }} $APT_PACKAGES_${{ matrix.server }}
 
@@ -123,6 +134,14 @@ jobs:
         run: |
           . $INSTALL_PATH/share/GNUstep/Makefiles/GNUstep.sh
           ./configure --enable-server=${{ matrix.server }} --enable-graphics=${{ matrix.graphics }}
+          # Built as the job says, with or without XFixes.
+          if [ "${{ matrix.server }}" = x11 ]; then
+            if [ "${{ matrix.xfixes }}" = without ]; then
+              ! grep -q "define HAVE_XFIXES 1" config.h
+            else
+              grep -q "define HAVE_XFIXES 1" config.h
+            fi
+          fi
           make && make install
 
       - name: Run tests
