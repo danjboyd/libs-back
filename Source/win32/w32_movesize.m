@@ -26,6 +26,10 @@
 
 #include <AppKit/NSEvent.h>
 #include <AppKit/NSWindow.h>
+#include <AppKit/NSApplication.h>
+#include <Foundation/NSRunLoop.h>
+#include <Foundation/NSException.h>
+#include <Foundation/NSAutoreleasePool.h>
 #include "win32/WIN32Server.h"
 #include "win32/WIN32Geometry.h"
 
@@ -298,14 +302,81 @@
   return 0; 
 }
 
+/* While a window is moved or sized, Windows runs its own modal loop inside
+   DefWindowProc (WM_SYSCOMMAND SC_MOVE / SC_SIZE) until the drag ends, so
+   the GNUstep run loop doesn't run in any mode: timers stop and nothing is
+   redisplayed (a progress indicator freezes, threaded or not).  A Win32
+   timer for the length of the loop fires the run loop's due timers in its
+   current mode and redisplays the windows that need it.  Only timers
+   fire: -limitDateForMode: doesn't poll input sources, so the modal loop
+   keeps its own messages.  Not covered: work queued for the main thread
+   (-performSelectorOnMainThread:, so a threaded progress indicator's
+   redisplay), which only -acceptInputForMode: runs. */
+#define GS_SIZEMOVE_TIMER_ID 0x4753
+#define GS_SIZEMOVE_TIMER_MS 15
+
 - (LRESULT) decodeWM_ENTERSIZEMOVEParams: (WPARAM)wParam : (LPARAM)lParam : (HWND)hwnd
 {
+  SetTimer(hwnd, GS_SIZEMOVE_TIMER_ID, GS_SIZEMOVE_TIMER_MS, NULL);
   return DefWindowProc(hwnd, WM_ENTERSIZEMOVE, wParam, lParam);
 }
 
 - (LRESULT) decodeWM_EXITSIZEMOVEParams: (WPARAM)wParam : (LPARAM)lParam : (HWND)hwnd
 {
+  KillTimer(hwnd, GS_SIZEMOVE_TIMER_ID);
   return DefWindowProc(hwnd, WM_EXITSIZEMOVE, wParam, lParam);
+}
+
+/* YES if it was the move/size loop's timer. */
+- (BOOL) decodeWM_TIMERParams: (WPARAM)wParam : (LPARAM)lParam : (HWND)hwnd
+{
+  static BOOL pumping = NO;
+  NSRunLoop *loop;
+  NSEnumerator *windows;
+  NSWindow *window;
+
+  if (wParam != GS_SIZEMOVE_TIMER_ID)
+    {
+      return NO;
+    }
+  if (pumping)
+    {
+      return YES;
+    }
+  pumping = YES;
+  NS_DURING
+    {
+      CREATE_AUTORELEASE_POOL(pool);
+
+      NSString *mode;
+
+      /* The mode the run loop was in when it dispatched the message that
+         started the drag: the default mode, or a modal panel's during a
+         modal session, so timers of other modes stay quiet. */
+      loop = [NSRunLoop currentRunLoop];
+      mode = [loop currentMode];
+      if (mode == nil)
+        {
+          mode = NSDefaultRunLoopMode;
+        }
+      [loop limitDateForMode: mode];
+      windows = [[NSApp windows] objectEnumerator];
+      while ((window = [windows nextObject]) != nil)
+        {
+          if ([window isVisible] && [window viewsNeedDisplay])
+            {
+              [window displayIfNeeded];
+            }
+        }
+      [pool drain];
+    }
+  NS_HANDLER
+    {
+      NSLog(@"exception in the move/size loop's timer: %@", localException);
+    }
+  NS_ENDHANDLER
+  pumping = NO;
+  return YES;
 }
 
 - (LRESULT) decodeWM_SIZINGParams:(HWND)hwnd : (WPARAM)wParam : (LPARAM)lParam

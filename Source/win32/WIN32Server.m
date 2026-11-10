@@ -1480,6 +1480,10 @@ LRESULT CALLBACK windowEnumCallback(HWND hwnd, LPARAM lParam)
       case WM_ENTERSIZEMOVE: 
         return [self decodeWM_ENTERSIZEMOVEParams: wParam : lParam : hwnd];
         break;
+      case WM_TIMER:
+        if ([self decodeWM_TIMERParams: wParam : lParam : hwnd])
+          return 0;
+        break;
       case WM_EXITSIZEMOVE:
         return [self decodeWM_EXITSIZEMOVEParams: wParam : lParam : hwnd];
         break;
