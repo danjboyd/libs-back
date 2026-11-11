@@ -17,7 +17,7 @@ plugins-themes-Adwaita's `Docs/UPSTREAM_POLICY.md`).
 | win32: `-setShadow::` gives a borderless window DWM's shadow (and Windows 11's rounding): menus, tool tips and flyouts (plugins-themes-winuitheme#39) | `win32-popup-shadows` | not sent |
 | win32: per-monitor DPI awareness with the `GSBackDPIAware` default: sharp at every display scale, each monitor's resolution, `WM_DPICHANGED` (keeping a window the gui placed itself), hinted glyph metrics off as with `GSScaleFactor`, and for a system DPI aware app whose screen's resolution isn't 72 (plugins-themes-winuitheme#105, ScreenshotTool #306) | `win32-per-monitor-dpi` | not sent |
 | win32: each monitor's frame flipped against the primary's height, as window coordinates are, so windows on a monitor shorter than the primary (or not level with it) find their screen and its scale (plugins-themes-winuitheme#105) | `win32-monitor-frames` | not sent |
-| win32: timers fire and windows redisplay while a window is moved or sized (Win32's modal loop in `DefWindowProc` otherwise stops the run loop, so progress indicators froze for the whole drag); a threaded progress indicator's redisplay isn't covered | `win32-sizemove-timers` | not sent |
+| win32: timers fire and windows redisplay while a window is moved or sized (Win32's modal loop in `DefWindowProc` otherwise stops the run loop, so progress indicators froze for the whole drag); a timer that starts a nested event loop (a modal panel) cancels the drag first, as Escape would, so the drag can't lose its input; a threaded progress indicator's redisplay isn't covered | `win32-sizemove-timers` | not sent |
 
 ## The package
 
