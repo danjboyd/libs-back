@@ -311,9 +311,18 @@
    fire: -limitDateForMode: doesn't poll input sources, so the modal loop
    keeps its own messages.  Not covered: work queued for the main thread
    (-performSelectorOnMainThread:, so a threaded progress indicator's
-   redisplay), which only -acceptInputForMode: runs. */
+   redisplay), which only -acceptInputForMode: runs.
+
+   A timer may start a nested event loop of its own (a modal panel, say).
+   That loop would take the drag's input from under Windows' loop, so a
+   later Escape or button-up never reaches the drag.  Before the nested
+   loop asks for its first event, the drag is cancelled (WM_CANCELMODE, as
+   if Escape were pressed) and Windows' loop ends once the timer returns. */
 #define GS_SIZEMOVE_TIMER_ID 0x4753
 #define GS_SIZEMOVE_TIMER_MS 15
+
+/* The window being moved or sized while the timer pumps the run loop. */
+static HWND pumpingWindow = NULL;
 
 - (LRESULT) decodeWM_ENTERSIZEMOVEParams: (WPARAM)wParam : (LPARAM)lParam : (HWND)hwnd
 {
@@ -325,6 +334,20 @@
 {
   KillTimer(hwnd, GS_SIZEMOVE_TIMER_ID);
   return DefWindowProc(hwnd, WM_EXITSIZEMOVE, wParam, lParam);
+}
+
+- (void) cancelSizeMoveForNestedEventLoop
+{
+  HWND hwnd = pumpingWindow;
+
+  if (hwnd != NULL)
+    {
+      /* Once is enough: the drag is over, Windows' loop just hasn't
+         returned yet. */
+      pumpingWindow = NULL;
+      KillTimer(hwnd, GS_SIZEMOVE_TIMER_ID);
+      SendMessage(hwnd, WM_CANCELMODE, 0, 0);
+    }
 }
 
 /* YES if it was the move/size loop's timer. */
@@ -344,6 +367,7 @@
       return YES;
     }
   pumping = YES;
+  pumpingWindow = hwnd;
   NS_DURING
     {
       CREATE_AUTORELEASE_POOL(pool);
@@ -375,6 +399,7 @@
       NSLog(@"exception in the move/size loop's timer: %@", localException);
     }
   NS_ENDHANDLER
+  pumpingWindow = NULL;
   pumping = NO;
   return YES;
 }

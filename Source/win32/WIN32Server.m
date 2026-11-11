@@ -487,6 +487,8 @@ hasShadowFrame(HWND hwnd)
                           dequeue: (BOOL)flag
 {
 //  [self callback: nil];
+  /* A nested event loop started from the move/size loop's timer. */
+  [self cancelSizeMoveForNestedEventLoop];
   return [super getEventMatchingMask: mask
                 beforeDate: limit
                 inMode: mode
