@@ -65,6 +65,47 @@ LRESULT CALLBACK win32SubwindowProc(
     WPARAM wParam, 
     LPARAM lParam );
 
+/* Where a rectangle of the view lies in its window's client area, in Win32
+ * coordinates (origin at the top left).
+ */
+static RECT
+ClientRectForViewRect(NSView *view, NSRect r, GSDisplayServer *server)
+{
+  NSWindow *win = [view window];
+  RECT parent_rect;
+  RECT result;
+  NSRect rect;
+
+  GetClientRect((HWND)[win windowNumber], &parent_rect);
+  if ([server handlesWindowDecorations] == YES)
+    {
+      /* The window manager handles window decorations, so the
+       * the parent window is equal to the content view and
+       * we must therefore use content view coordinates.
+       */
+      NSView *content = [win contentView];
+
+      rect = [view convertRect: r toView: content];
+      if ([content isFlipped])
+        {
+          rect.origin.y = NSHeight([content frame]) - NSMaxY(rect);
+        }
+    }
+  else
+    {
+      /* The GUI library handles window decorations, so the
+       * the parent window is equal to the NSWindow frame
+       * and we can use window base coordinates.
+       */
+      rect = [view convertRect: r toView: nil];
+    }
+  result.left = NSMinX(rect);
+  result.top = (parent_rect.bottom - parent_rect.top) - NSMaxY(rect);
+  result.right = result.left + NSWidth(rect);
+  result.bottom = result.top + NSHeight(rect);
+  return result;
+}
+
 @implementation Win32Subwindow 
 
 + (void) initialize
@@ -95,14 +136,13 @@ LRESULT CALLBACK win32SubwindowProc(
 
 - (id) initWithView: (NSOpenGLView *)view
 {
-  NSRect rect;
   WIN32Server *server;
   NSWindow *win;
   int x, y, width, height;
   HINSTANCE hInstance;
   WNDCLASS wclss;
   ATOM atom;
-  RECT parent_rect;
+  RECT frame;
 
   self = [super init];
   if (!self)
@@ -129,45 +169,29 @@ LRESULT CALLBACK win32SubwindowProc(
   atom = GetClassInfo( hInstance, NSOPENGLSUBWINDOWCLASS, &wclss );
   NSAssert(atom, @"MS window class not found !");
 
-  GetClientRect((HWND)[win windowNumber], &parent_rect);
-  if ([server handlesWindowDecorations] == YES)
-    {
-      /* The window manager handles window decorations, so the
-       * the parent X window is equal to the content view and
-       * we must therefore use content view coordinates.
-       */
-      rect = [view convertRect: [view bounds] toView: [[attached window] contentView]];
-      if ([[[attached window] contentView] isFlipped])
-        {
-          rect.origin.y = NSHeight([[[attached window] contentView] frame]) - (rect.size.height + rect.origin.y);
-        }
-    }
-  else
-    {
-      /* The GUI library handles window decorations, so the
-       * the parent X window is equal to the NSWindow frame
-       * and we can use window base coordinates.
-       */
-      rect = [view convertRect: [view bounds] toView: nil];
-    }
-  x = NSMinX(rect);
-  y = (parent_rect.bottom - parent_rect.top) - NSMaxY(rect);
-  width = NSWidth(rect);
-  height = NSHeight(rect);
-  
+  frame = ClientRectForViewRect(view, [view bounds], server);
+  x = frame.left;
+  y = frame.top;
+  width = frame.right - frame.left;
+  height = frame.bottom - frame.top;
+
   NSDebugMLLog(@"WGL", @"MS window creation (%d, %d, %u, %u)", x, y, width, height);
   
   /* WS_DISABLED causes mouse/keyboard events to be forwarded to the parent window
      so they can be processed normally; otherwise the OpenGL window would eat them */
   winid = CreateWindow(
       NSOPENGLSUBWINDOWCLASS, NSOPENGLSUBWINDOWNAME, 
-      WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS | WS_VISIBLE | WS_DISABLED, 
+      WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS | WS_DISABLED, 
       x, y, width, height, 
       (HWND)[win windowNumber], (HMENU)NULL, hInstance, (LPVOID)self);
 
   NSAssert(winid, @"Failed to create a MS window");
   
   ShowCursor( TRUE );
+
+  /* Created hidden: -update shows it if the view is visible, clipped to the
+   * part of it that is.  */
+  [self update];
 
   return self;
 }
@@ -179,16 +203,23 @@ LRESULT CALLBACK win32SubwindowProc(
 
 - (void) detach
 {
-  DestroyWindow(winid);
+  /* Once only: the context detaches explicitly, then again on dealloc.  */
+  if (winid != NULL)
+    {
+      DestroyWindow(winid);
+      winid = NULL;
+    }
   attached = nil;
 }
 
 - (void) update
 {
-  NSRect rect;
   GSDisplayServer *server;
   NSWindow *win;
-  int x, y, width, height;
+  RECT frame;
+  NSRect visible = NSZeroRect;
+  BOOL shown;
+
   NSAssert(attached, NSInternalInconsistencyException);
 
   win = [attached window];
@@ -206,37 +237,48 @@ LRESULT CALLBACK win32SubwindowProc(
   //FIXME
   //we should check that the window hasn't changed, maybe.
 
-  if ([server handlesWindowDecorations] == YES)
+  frame = ClientRectForViewRect(attached, [attached bounds], server);
+  MoveWindow(winid, frame.left, frame.top,
+	     frame.right - frame.left, frame.bottom - frame.top, TRUE);
+
+  /* A child window is drawn whatever the views around it do, so it has to
+   * be hidden with the view or an ancestor, and clipped to the part of the
+   * view that is visible (inside a scroll view, say).  */
+  shown = ![attached isHiddenOrHasHiddenAncestor];
+  if (shown)
     {
-      /* The window manager handles window decorations, so the
-       * the parent X window is equal to the content view and
-       * we must therefore use content view coordinates.
-       */
-      rect = [attached convertRect: [attached bounds]
-			    toView: [[attached window] contentView]];
-      if ([[[attached window] contentView] isFlipped])
+      visible = [attached visibleRect];
+      shown = !NSIsEmptyRect(visible);
+    }
+  NSDebugMLLog(@"WGL", @"update %p: frame (%ld, %ld, %ld, %ld) shown %d visible %@",
+               winid, frame.left, frame.top, frame.right, frame.bottom, shown,
+               NSStringFromRect(visible));
+  if (shown)
+    {
+      if (NSEqualRects(visible, [attached bounds]))
         {
-          rect.origin.y = NSHeight([[[attached window] contentView] frame]) - (rect.size.height + rect.origin.y);
+          SetWindowRgn(winid, NULL, TRUE);
+        }
+      else
+        {
+          RECT clip = ClientRectForViewRect(attached, visible, server);
+
+          /* In the child window's own coordinates; the system owns the
+           * region once it is set.  */
+          SetWindowRgn(winid, CreateRectRgn(clip.left - frame.left,
+                                            clip.top - frame.top,
+                                            clip.right - frame.left,
+                                            clip.bottom - frame.top), TRUE);
+        }
+      if ((GetWindowLong(winid, GWL_STYLE) & WS_VISIBLE) == 0)
+        {
+          ShowWindow(winid, SW_SHOWNA);
         }
     }
   else
     {
-      /* The GUI library handles window decorations, so the
-       * the parent X window is equal to the NSWindow frame
-       * and we can use window base coordinates.
-       */
-      rect = [attached convertRect: [attached bounds] toView: nil];
+      ShowWindow(winid, SW_HIDE);
     }
-
-  RECT parent_rect;
-  GetClientRect((HWND)[win windowNumber], &parent_rect);
-
-  x = NSMinX(rect);
-  y = (parent_rect.bottom - parent_rect.top) - NSMaxY(rect);
-  width = NSWidth(rect);
-  height = NSHeight(rect);
-  
-  MoveWindow(winid, x, y, width, height, /*FIXME*/TRUE);
 }
 
 - (void) dealloc
@@ -279,6 +321,10 @@ static Win32GLContext *currentGLContext;
 	{
 	  [Win32GLContext clearCurrentContext];
 	}
+      /* The child window goes now, not when the subwindow object is
+       * deallocated: something may still hold it (an autorelease pool),
+       * and until then the window would stay on screen over its parent.  */
+      [wsubwin detach];
       wsubwin->hDC = (HDC)NULL;
       DESTROY(wsubwin);
     }
@@ -443,12 +489,15 @@ static Win32GLContext *currentGLContext;
 		 format: @"setView called with a nil value"];
 
   NSAssert(format, NSInternalInconsistencyException);
-  win = [Win32Subwindow subwindowOnView: (NSOpenGLView*) view];
   current_view = [self view];
   if ( current_view != nil )
     {
       [current_view _setIgnoresBacking: saved_ignores_backing];
     }
+  /* The old child window goes first: its WM_DESTROY deletes the context's
+   * WGL context, which the new window's WM_CREATE replaces.  */
+  [self _detach];
+  win = [Win32Subwindow subwindowOnView: (NSOpenGLView*) view];
   ASSIGN(wsubwin, win);
   saved_ignores_backing = [view _ignoresBacking];
   [view _setIgnoresBacking: YES];
@@ -539,9 +588,11 @@ LRESULT CALLBACK win32SubwindowProc(
       NSDebugFLLog(@"WGLEvents", @"WM_DESTROY event received.");
       // finish OpenGL rendering
 
-      if(ctx->wgl_context) {
+      if(ctx != nil && ctx->wgl_context) {
         wglMakeCurrent(NULL, NULL);
         wglDeleteContext(ctx->wgl_context);
+        /* So that -dealloc doesn't delete it again.  */
+        ctx->wgl_context = NULL;
       }
 /*      if (hPalette) {
         DeleteObject(hPalette);
