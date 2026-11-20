@@ -174,6 +174,22 @@ BOOL CALLBACK LoadDisplayMonitorInfo(HMONITOR hMonitor,
 }
 
 
+/* TranslateMessage, except for a plain key press. A key's text comes from
+   ToUnicodeEx in process_key_event, which is called for WM_KEYDOWN; if
+   TranslateMessage has already run on the same key, Windows has used up a
+   dead key's state (an accent waiting for its letter) and the letter comes
+   out on its own. The IME still needs TranslateMessage for VK_PROCESSKEY,
+   and system keys (Alt) for their menu messages.  */
+static void
+translate_message(const MSG *msg)
+{
+  if (msg->message == WM_KEYDOWN && msg->wParam != VK_PROCESSKEY)
+    {
+      return;
+    }
+  TranslateMessage(msg);
+}
+
 @implementation WIN32Server
 
 - (BOOL) handlesWindowDecorations
@@ -214,10 +230,7 @@ BOOL CALLBACK LoadDisplayMonitorInfo(HMONITOR hMonitor,
         }
       else
         {
-          // Original author disregarded a translate message call here stating
-          // that it would give extra character messages - BUT THIS KILLS IME
-          // MESSAGE PROCESSING!!!!!
-          TranslateMessage(&msg);
+          translate_message(&msg);
           DispatchMessage(&msg);
         } 
     } 
@@ -249,7 +262,7 @@ BOOL CALLBACK LoadDisplayMonitorInfo(HMONITOR hMonitor,
         }
       else
         {
-          TranslateMessage(m);
+          translate_message(m);
           DispatchMessage(m); 
         } 
     } 
@@ -2674,17 +2687,25 @@ process_key_event(WIN32Server *svr, HWND hwnd, WPARAM wParam, LPARAM lParam, NSE
         blankKeyState[i] = 0;
 
       scan = ((lParam >> 16) & 0xFF);
-      result = ToUnicodeEx(wParam, scan, keyState, unicode, 5, 0, GetKeyboardLayout(0));
+      /* Only a key press may change the keyboard's dead key state (flag 4
+         leaves it as it is): a dead key waits for the next press, which
+         gives the composed character (or the accent and the character). A
+         dead key's own press gives no text; its release, the accent.  */
+      result = ToUnicodeEx(wParam, scan, keyState, unicode, 5,
+                           eventType == NSKeyDown ? 0 : 4, GetKeyboardLayout(0));
       if (result == -1)
         {
-          // A non spacing accent key was found, we still try to use the result 
-          result = 1;
+          result = (eventType == NSKeyDown) ? 0 : 1;
+        }
+      else if (result < 0)
+        {
+          result = 0;
         }
       keys = [NSString  stringWithCharacters: unicode length: result];
 
       // Now get the characters with a blank keyboard state so that
       // no modifiers are applied.
-      result = ToUnicodeEx(wParam, scan, blankKeyState, unicode, 5, 0, GetKeyboardLayout(0));
+      result = ToUnicodeEx(wParam, scan, blankKeyState, unicode, 5, 4, GetKeyboardLayout(0));
       //NSLog(@"To Unicode resulted in %d with %d", result, unicode[0]);
       if (result == -1)
         {
