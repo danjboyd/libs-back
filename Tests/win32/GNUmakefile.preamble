@@ -8,8 +8,8 @@ ADDITIONAL_INCLUDE_DIRS += -I$(GNUSTEP_BUILD_DIR)/../.. -I../..
 -include ../../config.make
 
 # The pasteboard test talks to gpbs through AppKit's NSPasteboard and puts
-# data on the Windows clipboard directly.
+# data on the Windows clipboard directly; the OpenGL view test calls WGL.
 ADDITIONAL_TOOL_LIBS += -lgnustep-gui
 ifeq ($(BUILD_SERVER),win32)
-ADDITIONAL_TOOL_LIBS += -luser32 -lgdi32
+ADDITIONAL_TOOL_LIBS += -luser32 -lgdi32 -lopengl32
 endif
