@@ -251,10 +251,15 @@ static void attributesWGL2NS( LPPIXELFORMATDESCRIPTOR ppfd, NSOpenGLPixelFormatA
 
 - (void) _setDrawable: (HDC) aDrawable
 {
-  // TODO : switch to wglChoosePixelFormatEXT 
+  // TODO : switch to wglChoosePixelFormatEXT
+
+  /* The drawable is always a window (an NSOpenGLView's child window), whether
+   * or not the attributes asked for NSOpenGLPFAWindow.  Some drivers (Mesa's
+   * opengl32) choose no format without PFD_DRAW_TO_WINDOW.  */
+  pfd.dwFlags |= PFD_DRAW_TO_WINDOW;
 
   NSCAssert(
-      wgl_pixelformat = ChoosePixelFormat(aDrawable, &pfd), 
+      wgl_pixelformat = ChoosePixelFormat(aDrawable, &pfd),
       @"ChoosePixelFormat failed.");
   NSCAssert(
       SetPixelFormat(aDrawable, wgl_pixelformat, &pfd), 
