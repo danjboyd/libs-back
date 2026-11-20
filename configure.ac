@@ -382,7 +382,10 @@ if test "x$enable_glx" = "xyes"; then
       ], have_glx_rgba=yes, have_glx_rgba=no)
    AC_MSG_RESULT([$have_glx_rgba])
    if test "$have_glx" = yes -a "$ac_cv_header_GL_glx_h" = yes -a "$have_glx_rgba" = yes; then
-     GLX_LIBS="-lGL"
+     # libGL isn't linked: the backend loads it when an app first asks for
+     # OpenGL (Source/x11/XGGLLoader.m), so apps start without it.
+     GLX_LIBS=""
+     AC_CHECK_FUNC(dlopen, , GLX_LIBS="-ldl")
      GLX_FLAGS=""
      WITH_GLX=yes
      AC_DEFINE(HAVE_GLX,1,[Define if you have the glx library])

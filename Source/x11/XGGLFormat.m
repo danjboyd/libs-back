@@ -335,6 +335,11 @@ do \
     {
       return nil;
     }
+  if (!XGGLLoad())
+    {
+      RELEASE(self);
+      return nil;
+    }
 
   fbconfig = NULL;
   visualinfo = NULL;

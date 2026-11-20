@@ -774,7 +774,7 @@ static int byte_order(void)
 - glContextClass
 {
 #ifdef HAVE_GLX
-  return [XGGLContext class];
+  return XGGLLoad() ? [XGGLContext class] : nil;
 #else
   return nil;
 #endif
@@ -783,7 +783,7 @@ static int byte_order(void)
 - glPixelFormatClass
 {
 #ifdef HAVE_GLX
-  return [XGGLPixelFormat class];
+  return XGGLLoad() ? [XGGLPixelFormat class] : nil;
 #else
   return nil;
 #endif

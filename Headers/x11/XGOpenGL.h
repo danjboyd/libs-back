@@ -35,6 +35,7 @@
 #include <GL/glx.h>
 #undef id
 #undef BOOL
+#include "x11/XGGLLoader.h"
 
 @class NSView;
 @class XGXSubWindow;

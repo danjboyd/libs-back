@@ -6659,7 +6659,18 @@ rm -rf conftest*
    { printf '%s\n' "$as_me:${as_lineno-$LINENO}: result: $have_glx_rgba" >&5
 printf '%s\n' "$have_glx_rgba" >&6; }
    if test "$have_glx" = yes -a "$ac_cv_header_GL_glx_h" = yes -a "$have_glx_rgba" = yes; then
-     GLX_LIBS="-lGL"
+     # libGL isn't linked: the backend loads it when an app first asks for
+     # OpenGL (Source/x11/XGGLLoader.m), so apps start without it.
+     GLX_LIBS=""
+     ac_fn_c_check_func "$LINENO" "dlopen" "ac_cv_func_dlopen"
+if test "x$ac_cv_func_dlopen" = xyes
+then :
+
+else case e in #(
+  e) GLX_LIBS="-ldl" ;;
+esac
+fi
+
      GLX_FLAGS=""
      WITH_GLX=yes
 

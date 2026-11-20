@@ -394,6 +394,11 @@ static XGGLContext *currentGLContext;
 {
   MAKE_DISPLAY(dpy);
 
+  if (!XGGLLoad())
+    {
+      return;
+    }
+
   if ([XGGLPixelFormat glxMinorVersion] >= 3)
     {
       if (!glXMakeContextCurrent(dpy, None, None, NULL))
@@ -559,6 +564,11 @@ static XGGLContext *currentGLContext;
     {
       return nil;
     }
+  if (!XGGLLoad())
+    {
+      RELEASE(self);
+      return nil;
+    }
 
   // FIXME: Need to set the pixelFormat ivar
   glx_context = context;
@@ -572,6 +582,11 @@ static XGGLContext *currentGLContext;
 
   if (!self)
     {
+      return nil;
+    }
+  if (!XGGLLoad())
+    {
+      RELEASE(self);
       return nil;
     }
 

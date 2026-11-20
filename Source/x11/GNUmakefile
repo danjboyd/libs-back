@@ -61,7 +61,8 @@ XGDragView.m \
 XIMInputServer.m \
 XWindowBuffer.m\
 XGGLFormat.m\
-XGGLContext.m
+XGGLContext.m\
+XGGLLoader.m
 
 -include GNUmakefile.preamble
 
