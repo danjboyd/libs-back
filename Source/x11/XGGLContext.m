@@ -36,6 +36,9 @@
 #include "x11/XGServerWindow.h"
 #include "x11/XGOpenGL.h"
 #include <X11/Xlib.h>
+#ifdef HAVE_XSHAPE
+#include <X11/extensions/shape.h>
+#endif
 
 //FIXME
 //should I store the display ?
@@ -43,28 +46,47 @@
   dpy = [(XGServer *)GSCurrentServer() xDisplay];\
   NSAssert(dpy != NULL, NSInternalInconsistencyException)
 
+/* The child X window an OpenGL context draws into, placed over its view in
+ * the view's X window.  X draws it whatever the GNUstep views round it do,
+ * so -update keeps it in step with the view: unmapped while the view or an
+ * ancestor is hidden, while none of the view is visible or once the view has
+ * left the window, and clipped (a bounding shape) to the view's visible
+ * rectangle, as inside a scroll view.  It is created unmapped; -update maps
+ * it.
+ */
 @interface XGXSubWindow : NSObject
 {
   @public
   Window  xwindowid;
   NSView *attached;
+  Display *display;
+  Colormap colormap;
+  int windowNumber;     /* The NSWindow the X window was made in, */
+  Window parent;        /* and that window's X window.  */
+  BOOL mapped;
+  BOOL shaped;
 }
 
 + subwindowOnView:(NSView *)view visualinfo:(XVisualInfo *)xVisualInfo;
 
 - (void) update;
+- (void) detach;
+- (BOOL) parentExists;
 
 @end
 
-/* The rectangle of the view in the pixels of the X window that holds it.
- * Window base coordinates are device pixels, also when the window is scaled
- * (GSScaleFactor), so the view is converted to them rather than to the
- * coordinates of another view, which would be points.
+/* Where the rectangle R of VIEW lies in the X window of VIEW's window, in X
+ * pixels (origin at the top left).  Window base coordinates are device
+ * pixels, also when the window is scaled (GSScaleFactor), so the view is
+ * converted to them rather than to the coordinates of another view, which
+ * would be points.
  */
-static NSRect
-XRectForView(NSView *view, GSDisplayServer *server)
+static XRectangle
+XRectForViewRect(NSView *view, NSRect r, XGServer *server,
+                 gswindow_device_t *win_info)
 {
-  NSRect rect = [view convertRect: [view bounds] toView: nil];
+  NSRect rect = [view convertRect: r toView: nil];
+  XRectangle result;
 
   if ([server handlesWindowDecorations] == YES)
     {
@@ -77,7 +99,35 @@ XRectForView(NSView *view, GSDisplayServer *server)
       rect.origin.x -= NSMinX(contentRect);
       rect.origin.y -= NSMinY(contentRect);
     }
-  return rect;
+  result.x = NSMinX(rect);
+  result.y = NSHeight(win_info->xframe) - NSMaxY(rect);
+  result.width = NSWidth(rect);
+  result.height = NSHeight(rect);
+  return result;
+}
+
+#ifdef HAVE_XSHAPE
+/* Whether the display has the shape extension, which clips the window.  */
+static BOOL
+HasShape(Display *dpy)
+{
+  static Display *checked = NULL;
+  static BOOL has = NO;
+  int event_base, error_base;
+
+  if (dpy != checked)
+    {
+      has = XShapeQueryExtension(dpy, &event_base, &error_base) ? YES : NO;
+      checked = dpy;
+    }
+  return has;
+}
+#endif
+
+static int
+IgnoreXErrors(Display *dpy, XErrorEvent *event)
+{
+  return 0;
 }
 
 @implementation XGXSubWindow
@@ -85,11 +135,10 @@ XRectForView(NSView *view, GSDisplayServer *server)
 //We assume that the current context is the same and is an XGServer
 - initWithView: (NSView *)view visualinfo: (XVisualInfo *)xVisualInfo
 {
-  NSRect rect;
+  XRectangle frame;
   gswindow_device_t *win_info;
   XGServer *server;
   NSWindow *window;
-  int x, y, width, height;
   int mask;
   XSetWindowAttributes window_attributes;
 
@@ -120,17 +169,14 @@ XRectForView(NSView *view, GSDisplayServer *server)
   win_info = [XGServer _windowWithTag: [window windowNumber]];
   NSAssert(win_info, NSInternalInconsistencyException);
 
-  rect = XRectForView(view, server);
-  x = NSMinX(rect);
-  y = NSHeight(win_info->xframe) - NSMaxY(rect);
-  width = NSWidth(rect);
-  height = NSHeight(rect);
+  frame = XRectForViewRect(view, [view bounds], server, win_info);
 
+  display = win_info->display;
+  colormap = XCreateColormap(display, win_info->ident,
+                             xVisualInfo->visual, AllocNone);
   window_attributes.border_pixel = 0;
   window_attributes.background_pixel = 0;
-  window_attributes.colormap = XCreateColormap(win_info->display, 
-                                               win_info->ident,
-                                               xVisualInfo->visual, AllocNone);
+  window_attributes.colormap = colormap;
 
   window_attributes.event_mask = StructureNotifyMask
                                | VisibilityChangeMask
@@ -138,45 +184,109 @@ XRectForView(NSView *view, GSDisplayServer *server)
 
   mask = CWBackPixel | CWBorderPixel | CWColormap | CWEventMask;
 
-  xwindowid = XCreateWindow(win_info->display, win_info->ident,
-                            x, y, width, height, 0, 
+  /* At least one pixel each way: X refuses an empty window.  */
+  xwindowid = XCreateWindow(display, win_info->ident,
+                            frame.x, frame.y,
+                            frame.width ? frame.width : 1,
+                            frame.height ? frame.height : 1, 0,
                             xVisualInfo->depth, InputOutput,
                             xVisualInfo->visual, mask, &window_attributes);
 
-  XMapWindow(win_info->display, xwindowid);
-
   attached = view;
+  windowNumber = [window windowNumber];
+  parent = win_info->ident;
+  mapped = NO;
+  shaped = NO;
+
+  /* Created unmapped: -update maps it if the view is visible, clipped to
+   * the part of it that is.  */
+  [self update];
 
   return self;
 }
 
+/* Whether the X window it was made in is still there.  When the NSWindow's
+ * X window is destroyed (the window is closed), the X server destroys this
+ * one with it, and nothing may be asked of it any more.  */
+- (BOOL) parentExists
+{
+  gswindow_device_t *win_info = [XGServer _windowWithTag: windowNumber];
+
+  return win_info != NULL && win_info->ident == parent;
+}
+
 - (void) map
 {
-  MAKE_DISPLAY(dpy);
-  XMapWindow(dpy, xwindowid);
+  if (xwindowid != None && !mapped)
+    {
+      XMapWindow(display, xwindowid);
+      mapped = YES;
+    }
+}
+
+- (void) unmap
+{
+  if (xwindowid != None && mapped)
+    {
+      if ([self parentExists])
+        {
+          XUnmapWindow(display, xwindowid);
+        }
+      mapped = NO;
+    }
 }
 
 - (void) detach
 {
-  //FIXME
-  //I assume that the current server is correct. 
-  MAKE_DISPLAY(dpy);
+  /* Once only: the context detaches explicitly, then again on dealloc.  */
+  if (xwindowid != None)
+    {
+      if ([self parentExists])
+        {
+          XDestroyWindow(display, xwindowid);
+        }
+      xwindowid = None;
+      mapped = NO;
+    }
+  if (colormap != None)
+    {
+      XFreeColormap(display, colormap);
+      colormap = None;
+    }
   attached = nil;
-  XDestroyWindow(dpy, xwindowid);
 }
 
 - (void) update
 {
-  NSRect rect;
+  XRectangle frame;
   gswindow_device_t *win_info;
   GSDisplayServer *server;
   NSWindow *win;
-  int x, y, width, height;
+  NSRect visible = NSZeroRect;
+  BOOL shown;
 
   NSAssert(attached, NSInternalInconsistencyException);
+  if (xwindowid == None)
+    {
+      return;
+    }
+  if (![self parentExists])
+    {
+      /* Gone with the NSWindow's X window; the context attaches again.  */
+      mapped = NO;
+      return;
+    }
 
   win = [attached window];
-  NSAssert1(win, @"%@'s window is nil now!", attached);
+  if (win == nil || [win windowNumber] != windowNumber)
+    {
+      /* The view has left the window the X window is in.  The gui clears
+       * the context's drawable then; until it does, keep it off screen.  */
+      NSDebugMLLog(@"GLX", @"%@ left its window: unmapping %lu", attached,
+                   (unsigned long)xwindowid);
+      [self unmap];
+      return;
+    }
 
   NSAssert1(![attached isRotatedFromBase],
 	    @"%@ is rotated, now!", attached);
@@ -187,20 +297,74 @@ XRectForView(NSView *view, GSDisplayServer *server)
   NSAssert([server isKindOfClass: [XGServer class]], 
 	   NSInternalInconsistencyException);
 
-  //FIXME
-  //we should check that the window hasn't changed, maybe.
-
-  win_info = [XGServer _windowWithTag: [win windowNumber]];
+  win_info = [XGServer _windowWithTag: windowNumber];
   NSAssert(win_info, NSInternalInconsistencyException);
 
-  rect = XRectForView(attached, server);
-  x = NSMinX(rect);
-  y = NSHeight(win_info->xframe) - NSMaxY(rect);
-  width = NSWidth(rect);
-  height = NSHeight(rect);
+  frame = XRectForViewRect(attached, [attached bounds], (XGServer *)server,
+                           win_info);
+  XMoveResizeWindow(display, xwindowid, frame.x, frame.y,
+                    frame.width ? frame.width : 1,
+                    frame.height ? frame.height : 1);
 
-  
-  XMoveResizeWindow(win_info->display, xwindowid,x, y, width, height);
+  /* A child window is drawn whatever the views round it do, so it has to
+   * be unmapped with the view or an ancestor, and clipped to the part of
+   * the view that is visible (inside a scroll view, say).  */
+  shown = ![attached isHiddenOrHasHiddenAncestor];
+  if (shown)
+    {
+      visible = [attached visibleRect];
+      shown = !NSIsEmptyRect(visible) && frame.width > 0 && frame.height > 0;
+    }
+  NSDebugMLLog(@"GLX", @"update %lu: frame (%d, %d, %u, %u) shown %d visible %@",
+               (unsigned long)xwindowid, frame.x, frame.y,
+               frame.width, frame.height, shown, NSStringFromRect(visible));
+  if (!shown)
+    {
+      [self unmap];
+      return;
+    }
+
+#ifdef HAVE_XSHAPE
+  if (HasShape(display))
+    {
+      if (NSEqualRects(visible, [attached bounds]))
+        {
+          if (shaped)
+            {
+              XShapeCombineMask(display, xwindowid, ShapeBounding, 0, 0,
+                                None, ShapeSet);
+              shaped = NO;
+            }
+        }
+      else
+        {
+          XRectangle clip = XRectForViewRect(attached, visible,
+                                             (XGServer *)server, win_info);
+          int x0 = MAX(clip.x - frame.x, 0);
+          int y0 = MAX(clip.y - frame.y, 0);
+          int x1 = MIN(clip.x + (int)clip.width - frame.x, (int)frame.width);
+          int y1 = MIN(clip.y + (int)clip.height - frame.y, (int)frame.height);
+          XRectangle box;
+
+          if (x1 <= x0 || y1 <= y0)
+            {
+              /* Less than a pixel of it shows.  */
+              [self unmap];
+              return;
+            }
+          /* In the child window's own coordinates.  */
+          box.x = x0;
+          box.y = y0;
+          box.width = x1 - x0;
+          box.height = y1 - y0;
+          XShapeCombineRectangles(display, xwindowid, ShapeBounding, 0, 0,
+                                  &box, 1, ShapeSet, Unsorted);
+          shaped = YES;
+        }
+    }
+#endif
+
+  [self map];
 }
 
 - (void) dealloc
@@ -266,15 +430,54 @@ static XGGLContext *currentGLContext;
           [XGGLContext clearCurrentContext];
         }
 
-      if ( glx_drawable != xSubWindow->xwindowid )
+      if (glx_drawable != None && glx_drawable != xSubWindow->xwindowid)
         {
           MAKE_DISPLAY(dpy);
 
-          glXDestroyWindow(dpy, glx_drawable);
-          glx_drawable = None;
-        }
+          if ([xSubWindow parentExists])
+            {
+              glXDestroyWindow(dpy, glx_drawable);
+            }
+          else
+            {
+              /* The X window has gone with its parent, and the server has
+               * freed the GLX window with it: free libGL's side of it, and
+               * ignore the server's error.  */
+              XErrorHandler old;
 
+              XSync(dpy, False);
+              old = XSetErrorHandler(IgnoreXErrors);
+              glXDestroyWindow(dpy, glx_drawable);
+              XSync(dpy, False);
+              XSetErrorHandler(old);
+            }
+        }
+      glx_drawable = None;
+
+      /* The X window goes now, not when the subwindow object is
+       * deallocated: something may still hold it (an autorelease pool),
+       * and until then the window would stay on screen over its parent.  */
+      [xSubWindow detach];
       DESTROY(xSubWindow);
+    }
+}
+
+/* If the X window has gone with the NSWindow's (the window was closed and
+ * shown again), attach to the view again; the GLX context stays.  While the
+ * window has no X window, nothing changes (the drawable stays dead, as it
+ * always has, rather than -makeCurrentContext starting to raise).  */
+- (void) _attachAgainIfWindowGone
+{
+  if (xSubWindow != nil && ![xSubWindow parentExists])
+    {
+      NSView *view = xSubWindow->attached;
+
+      if (view != nil && [view window] != nil
+          && [XGServer _windowWithTag: [[view window] windowNumber]] != NULL)
+        {
+          NSDebugMLLog(@"GLX", @"%@: X window gone, attaching again", view);
+          [self setView: view];
+        }
     }
 }
 
@@ -409,6 +612,7 @@ static XGGLContext *currentGLContext;
 {
   MAKE_DISPLAY(dpy);
 
+  [self _attachAgainIfWindowGone];
   if (xSubWindow == nil)
     {
       [NSException raise: NSGenericException
@@ -481,6 +685,11 @@ static XGGLContext *currentGLContext;
       [current_view _setIgnoresBacking: saved_ignores_backing];
     }
 
+  /* The old drawable and X window go first; the GLX context stays, so the
+   * view draws with the same context, its objects and state, after
+   * attaching again.  (The old GLX window used to be left behind, on an X
+   * window destroyed whenever the old subwindow object was freed.)  */
+  [self _detach];
   ASSIGN(xSubWindow, [XGXSubWindow subwindowOnView: view 
                                         visualinfo: [pixelFormat visualinfo]]);
 
@@ -493,6 +702,7 @@ static XGGLContext *currentGLContext;
 
 - (void)update
 {
+  [self _attachAgainIfWindowGone];
   [xSubWindow update];
 }
 
